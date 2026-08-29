@@ -8,6 +8,6 @@ if (-not (gh auth status 2>$null)) {
     exit 1
 }
 # 仓库名：GitHub 不支持空格，取主名 Android-Codex（别名 Android Agent / Android Chat 见 README）
-gh repo create Android-Codex --public --source . --remote origin --push --description "Android Codex / Android Agent / Android Chat - local AI chat client"
+gh repo create AndroidCodexAndroidAgentAndroidChat --public --source . --remote origin --push --description "AndroidCodex AndroidAgentAndroidChat - local AI chat client"
 Pop-Location
-Write-Host "已发布: https://github.com/<你的用户名>/Android-Codex"
+Write-Host "已发布: https://github.com/<你的用户名>/AndroidCodexAndroidAgentAndroidChat"
