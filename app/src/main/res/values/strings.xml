@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">XS Chat</string>
+    <string name="app_desc">兼容 OpenAI API 的多模型 AI 聊天客户端</string>
+    <string name="send">发送</string>
+    <string name="stop">停止</string>
+    <string name="settings">设置</string>
+    <string name="new_chat">新对话</string>
+    <string name="history">历史记录</string>
+    <string name="models">模型</string>
+    <string name="copy">复制</string>
+    <string name="regenerate">重新生成</string>
+    <string name="delete">删除</string>
+    <string name="edit">编辑</string>
+</resources>

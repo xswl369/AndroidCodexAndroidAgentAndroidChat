@@ -1,0 +1,83 @@
+package com.xs.chat.data
+
+import android.content.Context
+import android.content.SharedPreferences
+
+class SettingsStore(context: Context) {
+    private val sp: SharedPreferences =
+        context.getSharedPreferences("xs_settings", Context.MODE_PRIVATE)
+
+    var baseUrl: String
+        get() = sp.getString(KEY_BASE_URL, "").orEmpty().trim()
+        set(value) = sp.edit().putString(KEY_BASE_URL, value.trim()).apply()
+
+    var apiKey: String
+        get() = sp.getString(KEY_API_KEY, "").orEmpty().trim()
+        set(value) = sp.edit().putString(KEY_API_KEY, value.trim()).apply()
+
+    var temperature: Float
+        get() = sp.getFloat(KEY_TEMP, 0.7f)
+        set(value) = sp.edit().putFloat(KEY_TEMP, value).apply()
+
+    var systemPrompt: String
+        get() = sp.getString(KEY_SYSTEM, "").orEmpty()
+        set(value) = sp.edit().putString(KEY_SYSTEM, value).apply()
+
+    var lastModelId: String
+        get() = sp.getString(KEY_LAST_MODEL, "").orEmpty()
+        set(value) = sp.edit().putString(KEY_LAST_MODEL, value).apply()
+
+    var darkMode: String
+        get() = sp.getString(KEY_DARK_MODE, "system").orEmpty()
+        set(value) = sp.edit().putString(KEY_DARK_MODE, value).apply()
+
+    var language: String
+        get() = sp.getString(KEY_LANGUAGE, "zh").orEmpty()
+        set(value) = sp.edit().putString(KEY_LANGUAGE, value).apply()
+
+    var imageSize: String
+        get() = sp.getString(KEY_IMAGE_SIZE, "1024x1024").orEmpty()
+        set(value) = sp.edit().putString(KEY_IMAGE_SIZE, value.trim()).apply()
+
+    var videoResolution: String
+        get() = sp.getString(KEY_VIDEO_RESOLUTION, "720P").orEmpty()
+        set(value) = sp.edit().putString(KEY_VIDEO_RESOLUTION, value.trim()).apply()
+
+    var videoDuration: String
+        get() = sp.getString(KEY_VIDEO_DURATION, "5").orEmpty()
+        set(value) = sp.edit().putString(KEY_VIDEO_DURATION, value.trim()).apply()
+
+    var memoryLimit: Int
+        get() = sp.getInt(KEY_MEMORY_LIMIT, 2000)
+        set(value) = sp.edit().putInt(KEY_MEMORY_LIMIT, value.coerceIn(10, 50000)).apply()
+
+    var callRoleId: String
+        get() = sp.getString(KEY_CALL_ROLE_ID, "").orEmpty()
+        set(value) = sp.edit().putString(KEY_CALL_ROLE_ID, value).apply()
+
+    // 方言语音引擎：阿里云百炼(DashScope) CosyVoice API Key + CosyVoice 开源自部署地址（二者至少其一）
+    var dialectKey: String
+        get() = sp.getString(KEY_DIALECT_KEY, "").orEmpty().trim()
+        set(value) = sp.edit().putString(KEY_DIALECT_KEY, value.trim()).apply()
+
+    var dialectUrl: String
+        get() = sp.getString(KEY_DIALECT_URL, "").orEmpty().trim()
+        set(value) = sp.edit().putString(KEY_DIALECT_URL, value.trim()).apply()
+
+    private companion object {
+        const val KEY_BASE_URL = "base_url"
+        const val KEY_API_KEY = "api_key"
+        const val KEY_TEMP = "temperature"
+        const val KEY_SYSTEM = "system_prompt"
+        const val KEY_LAST_MODEL = "last_model_id"
+        const val KEY_DARK_MODE = "dark_mode"
+        const val KEY_LANGUAGE = "language"
+        const val KEY_IMAGE_SIZE = "image_size"
+        const val KEY_VIDEO_RESOLUTION = "video_resolution"
+        const val KEY_VIDEO_DURATION = "video_duration"
+        const val KEY_MEMORY_LIMIT = "memory_limit"
+        const val KEY_CALL_ROLE_ID = "call_role_id"
+        const val KEY_DIALECT_KEY = "dialect_key"
+        const val KEY_DIALECT_URL = "dialect_url"
+    }
+}

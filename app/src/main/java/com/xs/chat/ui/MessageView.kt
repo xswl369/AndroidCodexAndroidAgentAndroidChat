@@ -1,0 +1,305 @@
+package com.xs.chat.ui
+
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import androidx.core.content.res.ResourcesCompat
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.xs.chat.R
+import com.xs.chat.data.Attachment
+import com.xs.chat.data.CallMeta
+import com.xs.chat.data.ChatMessage
+import com.xs.chat.data.Role
+
+/** 消息竖三点菜单项。 */
+private enum class MsgAction { EDIT, TRANSLATE, SHARE, COPY, REGENERATE, DELETE }
+
+/** 构建调用统计文案（Codex 风格）：输入/输出 token、耗时、调用次数。 */
+private fun buildCallLabel(lang: String, meta: CallMeta): String {
+    val base = Lang.t(lang, "call_stats").format(
+        formatTokens(meta.promptTokens),
+        formatTokens(meta.completionTokens),
+        meta.durationMs / 1000.0
+    )
+    return if (meta.callCount > 1) base + Lang.t(lang, "call_more").format(meta.callCount) else base
+}
+
+private fun formatTokens(n: Long): String = when {
+    n >= 1000 -> String.format("%.1fk", n / 1000.0)
+    else -> n.toString()
+}
+
+/** 消息菜单：菜单项固定，展开状态由父级控制（竖三点按钮与长按共用）。 */
+@Composable
+private fun MessageMenu(
+    items: List<Pair<MsgAction, String>>,
+    open: Boolean,
+    onOpenChange: (Boolean) -> Unit,
+    onAction: (MsgAction) -> Unit
+) {
+    Box {
+        IconButton(onClick = { onOpenChange(true) }, modifier = Modifier.size(28.dp)) {
+            Icon(
+                Icons.Rounded.MoreVert,
+                contentDescription = "更多",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { onOpenChange(false) }) {
+            items.forEach { (action, label) ->
+                DropdownMenuItem(
+                    text = { Text(label) },
+                    onClick = { onOpenChange(false); onAction(action) }
+                )
+            }
+        }
+    }
+}
+
+/** 消息区域长按手势：长按弹出与竖三点一致的菜单。 */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun Modifier.longPressMenu(onMenu: () -> Unit): Modifier = combinedClickable(
+    onClick = {},
+    onLongClick = onMenu,
+    indication = null,
+    interactionSource = remember { MutableInteractionSource() }
+)
+
+@Composable
+fun UserMessageBubble(
+    content: String,
+    attachments: List<Attachment>,
+    onEdit: () -> Unit,
+    onTranslate: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val lang = LocalLanguage.current
+    var menuOpen by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Surface(
+            shape = RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier
+                .widthIn(max = 340.dp)
+                .longPressMenu { menuOpen = true }
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                if (attachments.isNotEmpty()) {
+                    MessageAttachments(attachments)
+                    if (content.isNotBlank()) Spacer(Modifier.height(8.dp))
+                }
+                if (content.isNotBlank()) {
+                    Text(content, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+        Row(Modifier.padding(top = 2.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            MessageMenu(
+                items = listOf(
+                    MsgAction.EDIT to Lang.t(lang, "edit_message"),
+                    MsgAction.TRANSLATE to Lang.t(lang, "translate_message"),
+                    MsgAction.SHARE to Lang.t(lang, "share_message"),
+                    MsgAction.DELETE to Lang.t(lang, "delete")
+                ),
+                open = menuOpen,
+                onOpenChange = { menuOpen = it },
+                onAction = { action ->
+                    when (action) {
+                        MsgAction.EDIT -> onEdit()
+                        MsgAction.TRANSLATE -> onTranslate()
+                        MsgAction.SHARE -> onShare()
+                        else -> onDelete()
+                    }
+                }
+            )
+        }
+    }
+}
+
+/** 加载桌面启动图标（adaptive-icon）并转为 Painter，供 AI 头像使用。 */
+@Composable
+private fun rememberAppIconPainter(): Painter {
+    val context = LocalContext.current
+    return remember(context) {
+        val drawable = ResourcesCompat.getDrawable(context.resources, R.mipmap.ic_launcher, context.theme)
+        val size = 108
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        if (drawable != null) {
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(Canvas(bitmap))
+        }
+        BitmapPainter(bitmap.asImageBitmap())
+    }
+}
+
+@Composable
+fun AssistantMessageView(
+    message: ChatMessage,
+    isStreaming: Boolean,
+    onRegenerate: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onTranslate: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val lang = LocalLanguage.current
+    val primary = MaterialTheme.colorScheme.primary
+    val textColor = if (message.error) MaterialTheme.colorScheme.error
+    else MaterialTheme.colorScheme.onBackground
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.Top) {
+            Image(
+                painter = rememberAppIconPainter(),
+                contentDescription = "AI",
+                modifier = Modifier.size(30.dp).clip(CircleShape)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(
+                Modifier
+                    .weight(1f)
+                    .longPressMenu { menuOpen = true }
+            ) {
+                MarkdownText(
+                    markdown = message.content,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (isStreaming) {
+                    val progress = message.progress
+                    if (progress != null) {
+                        // 图片/视频生成：提示文字 + 进度条 + 跟随百分比
+                        Column(Modifier.padding(top = 6.dp)) {
+                            Text(
+                                "生成中，请稍后",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            LinearProgressIndicator(
+                                progress = { progress / 100f },
+                                modifier = Modifier.width(220.dp).height(4.dp)
+                            )
+                            Text(
+                                "$progress%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 6.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                Lang.t(lang, "thinking"),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                if (!message.attachments.orEmpty().isEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    MessageAttachments(message.attachments.orEmpty())
+                }
+                Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    message.callMeta?.let { meta ->
+                        Text(
+                            buildCallLabel(lang, meta),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                    }
+                    MessageMenu(
+                        items = buildList {
+                            add(MsgAction.COPY to Lang.t(lang, "copy"))
+                            if (!isStreaming && message.content.isNotEmpty()) {
+                                add(MsgAction.REGENERATE to Lang.t(lang, "regenerate"))
+                            }
+                            add(MsgAction.EDIT to Lang.t(lang, "edit_message"))
+                            add(MsgAction.TRANSLATE to Lang.t(lang, "translate_message"))
+                            add(MsgAction.SHARE to Lang.t(lang, "share_message"))
+                            add(MsgAction.DELETE to Lang.t(lang, "delete"))
+                        },
+                        open = menuOpen,
+                        onOpenChange = { menuOpen = it },
+                        onAction = { action ->
+                            when (action) {
+                                MsgAction.COPY -> onCopy()
+                                MsgAction.REGENERATE -> onRegenerate()
+                                MsgAction.EDIT -> onEdit()
+                                MsgAction.TRANSLATE -> onTranslate()
+                                MsgAction.SHARE -> onShare()
+                                MsgAction.DELETE -> onDelete()
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+
