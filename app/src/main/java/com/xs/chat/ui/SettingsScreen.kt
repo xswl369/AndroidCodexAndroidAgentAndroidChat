@@ -263,17 +263,21 @@ fun SettingsScreen(
                 Switch(checked = state.rootControlEnabled, onCheckedChange = { vm.setRootControl(it) })
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "状态：" + when {
-                        RootController.isRooted() -> "已获取 Root（uid 0）"
-                        ShizukuController.hasPermission() -> "Shizuku 已授权"
-                        AdbShellController.isConnected() -> "无线调试已连接"
-                        else -> "无可用通道（请配对无线调试或授权 Shizuku/Root）"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Root 通道：" + if (RootController.isRooted()) "已获取 Root（uid 0）" else "未检测到 Root",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "非 Root 通道：" + listOfNotNull(
+                            if (AdbShellController.isConnected()) "无线调试已连接" else "无线调试未连接",
+                            if (ShizukuController.hasPermission()) "Shizuku 已授权" else "Shizuku 未授权"
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 OutlinedButton(
                     onClick = {
                         rootTesting = true

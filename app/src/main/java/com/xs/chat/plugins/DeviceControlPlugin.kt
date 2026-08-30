@@ -19,12 +19,16 @@ import java.util.Locale
  */
 object DeviceControlPlugin {
 
-    /** 是否有可用控制通道。 */
-    fun canControl(): Boolean =
-        RootController.canUseRoot() || AdbShellController.isConnected() || ShizukuController.hasPermission()
-
     suspend fun execute(context: Context, instruction: String): String = withContext(Dispatchers.IO) {
-        if (!canControl()) {
+        // 非 root 用户：无线调试配对过但连接断开时自动重连（ensureConnected 兜底），Shizuku 未授权则请求
+        val root = RootController.canUseRoot()
+        val adb = if (!root && !AdbShellController.isConnected()) AdbShellController.ensureConnected()
+        else AdbShellController.isConnected()
+        val shizuku = if (!root && !adb && !ShizukuController.hasPermission()) {
+            ShizukuController.requestPermission()
+            ShizukuController.hasPermission()
+        } else ShizukuController.hasPermission()
+        if (!root && !adb && !shizuku) {
             "❌ 当前无可用控制通道。请开启：① Root 权限（已 root 设备）② 设置页「无线调试」配对 ③ Shizuku 授权。"
         } else {
             runCatching { parseAndRun(context, instruction.trim()) }

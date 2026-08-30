@@ -16,8 +16,8 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 64
-        versionName = "1.2.43"
+        versionCode = 65
+        versionName = "1.2.44"
     }
 
     buildTypes {
