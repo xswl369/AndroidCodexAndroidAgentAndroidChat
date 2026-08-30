@@ -32,6 +32,7 @@ import com.xs.chat.plugins.DeviceControlPlugin
 import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.plugins.PluginRegistry
 import com.xs.chat.plugins.PluginRegistry.PluginInfo
+import com.wirelessdebug.service.AdbShellController
 import com.wirelessdebug.service.RootController
 import java.io.File
 import android.util.Base64
@@ -77,6 +78,8 @@ data class ChatUiState(
     val callRoles: List<CallRole> = emptyList(),
     val callRoleId: String = "",
     val rootControlEnabled: Boolean = true,
+    /** 无线调试内置 key 未被本机授权（换机/撤销后），需要一键重新配对。 */
+    val devicePairNeeded: Boolean = false,
     val plugins: List<PluginInfo> = PluginRegistry.plugins,
     val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet(),
     /** 正在被 AI 完善定义的插件 id（添加插件后异步生成触发指令/使用说明）。 */
@@ -1120,13 +1123,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun runDeviceControl(instruction: String) {
         if (_ui.value.isStreaming) return
         val app = getApplication<android.app.Application>()
+        val model = _ui.value.activeModel
         pluginJob = viewModelScope.launch {
             val assistantId = beginPluginWork("【设备控制】$instruction", emptyList())
             _ui.update { it.copy(isStreaming = true) }
             try {
-                val result = DeviceControlPlugin.execute(app, instruction)
+                val result = DeviceControlPlugin.execute(app, instruction, model) { step ->
+                    updateAssistantProgress(assistantId, step)
+                }
                 MemoryPlugin.log(app, "设备控制", instruction.take(40))
                 completeAssistant(assistantId, result, emptyList())
+                // 仅当内置 key 确实未被授权（换机/撤销）时才弹「一键配对」引导；
+                // 已配对但连接失败/通道未开启等场景不误报
+                if (result.startsWith("❌") && (result.contains("尚未授权") || result.contains("重新配对") || result.contains("未配对"))) {
+                    _ui.update { it.copy(devicePairNeeded = true) }
+                    notice("无线调试未配对，点击下方提示可一键配对")
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1137,8 +1149,34 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 设备控制 Agent 的中间步骤实时追加到 assistant 消息（不打断流程，仅保留最近若干行）。 */
+    private fun updateAssistantProgress(assistantId: String, step: String) {
+        if (step.isBlank()) return
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            val m = st.messages[idx]
+            val current = if (m.content.isBlank()) "" else m.content + "\n"
+            val lines = (current + step).lines().takeLast(24)
+            st.copy(messages = st.messages.toMutableList().apply { this[idx] = m.copy(content = lines.joinToString("\n")) })
+        }
+    }
+
+    /** 一键配对成功后：关闭提示条并后台建立 shell 通道。 */
+    fun onDevicePairSuccess() {
+        _ui.update { it.copy(devicePairNeeded = false) }
+        viewModelScope.launch(Dispatchers.IO) { runCatching { AdbShellController.ensureConnected() } }
+    }
+
+    fun dismissPairPrompt() {
+        _ui.update { it.copy(devicePairNeeded = false) }
+    }
+
     companion object {
         private const val TAG = "ChatViewModel"
+
+        /** 单次请求最多发送的消息条数（含最新一条），超出部分裁剪以加快响应。 */
+        private const val MAX_CONTEXT_MESSAGES = 24
 
         /** 输入框自动触发生图/生视频的意图关键词（疑问句式由 mediaGenIntent 排除）。 */
         private val IMAGE_INTENT_KEYWORDS = listOf(
@@ -1194,16 +1232,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var usage: Usage? = null
             try {
                 completed = withContext(Dispatchers.IO) {
-                    val parts = resolveParts(messages)
+                    // 上下文裁剪：长对话只发最近消息，控制 prompt 长度、降低首 token 时延
+                    val trimmed = trimContext(messages)
+                    val parts = resolveParts(trimmed)
+                    val deltaBuf = StringBuilder()
+                    var lastFlush = 0L
+                    fun flushDelta() {
+                        val chunk = deltaBuf.toString().also { deltaBuf.setLength(0) }
+                        if (chunk.isNotEmpty()) appendDelta(assistantId, chunk)
+                    }
                     instance.streamChat(
                         model = model.modelId,
-                        messages = messages.filter { it.role != Role.SYSTEM },
+                        messages = trimmed.filter { it.role != Role.SYSTEM },
                         systemPrompt = _ui.value.systemPrompt.ifBlank { null },
                         temperature = _ui.value.temperature,
                         attachmentParts = parts,
-                        onDelta = { delta -> appendDelta(assistantId, delta) },
+                        onDelta = { delta ->
+                            deltaBuf.append(delta)
+                            val now = System.currentTimeMillis()
+                            // 流式 UI 节流：合并 ~40ms 内的增量，减少每 token 一次 Compose 重组
+                            if (now - lastFlush >= 40) {
+                                lastFlush = now
+                                flushDelta()
+                            }
+                        },
                         onUsage = { usage = it }
-                    )
+                    ).also { flushDelta() }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1230,6 +1284,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             refreshHistory()
         }
     }
+
+    /** 只发送最近 [MAX_CONTEXT_MESSAGES] 条消息（UI 仍显示完整历史）。 */
+    private fun trimContext(messages: List<ChatMessage>): List<ChatMessage> =
+        if (messages.size <= MAX_CONTEXT_MESSAGES) messages
+        else messages.takeLast(MAX_CONTEXT_MESSAGES)
 
     private fun appendDelta(assistantId: String, delta: String) {
         _ui.update { st ->

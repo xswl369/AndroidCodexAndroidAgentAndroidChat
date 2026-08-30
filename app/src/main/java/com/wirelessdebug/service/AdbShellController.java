@@ -139,10 +139,17 @@ public class AdbShellController {
     /** 设备侧是否拒绝过内置 key（授权失效/被撤销）。 */
     public static boolean isAuthRejected() { return authRejected; }
 
+    /** 清除失败冷却，强制下一次 ensureConnected 重新扫描连接（端口变化等瞬态后使用）。 */
+    public static void clearFailCooldown() {
+        synchronized (LOCK) { lastFailMs = 0; }
+    }
+
     private static AdbClient getClient() throws Exception {
         if (adb != null) return adb;
-        // 失败冷却：8 秒内不重复扫描/连接，快速回退
-        if (lastFailMs > 0 && System.currentTimeMillis() - lastFailMs < 8_000) return null;
+        // 认证拒绝标志按轮次判定：进入本轮即清零（冷却期内也不沿用上一轮的认证错误，否则已配对用户会被误报未配对）
+        authRejected = false;
+        // 失败冷却：3 秒内不重复扫描/连接，快速回退（仅限失败瞬态，不阻塞下一轮重试）
+        if (lastFailMs > 0 && System.currentTimeMillis() - lastFailMs < 3_000) return null;
         Context ctx = WdbContext.get();
         if (ctx == null) return null;
         // 1) 加载内置 key + 客户端证书（PEM 直载，Android 原生解析）
@@ -785,7 +792,6 @@ public class AdbShellController {
         }
     }
 }
-
 
 
 

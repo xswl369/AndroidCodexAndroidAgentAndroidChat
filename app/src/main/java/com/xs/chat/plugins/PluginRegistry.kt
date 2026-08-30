@@ -21,7 +21,7 @@ object PluginRegistry {
 
     /** 全部内置插件（按需扩展：新增插件只需在此列表追加一项）。 */
     val plugins: List<PluginInfo> = listOf(
-        PluginInfo("device_control", "设备控制", "聊天指令操控手机：打开应用 / 点击 / 滑动 / 输入 / 读屏 / 按键"),
+        PluginInfo("device_control", "设备控制", "聊天指令操控手机：打开应用 / 点击 / 滑动 / 输入 / 读屏 / 按键，复杂指令本地离线智能识别"),
         PluginInfo("web_search", "联网搜索", "实时联网搜索，返回网页结果标题、链接与摘要"),
         PluginInfo("file_edit", "文件修改", "AI 按指令修改文件，保留原格式，结果可预览并保存到下载目录"),
         PluginInfo("image_gen", "AI 生图", "文字 / 图片生成图片（需配置支持生图的模型）"),

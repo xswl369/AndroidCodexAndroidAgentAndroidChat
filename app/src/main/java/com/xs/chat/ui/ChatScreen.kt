@@ -5,7 +5,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.Manifest
 import android.content.Intent
+import android.app.Activity
+import android.media.projection.MediaProjectionManager
 import android.widget.Toast
+import com.xs.chat.wireless.AutoPair
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
@@ -131,6 +134,25 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var pairing by remember { mutableStateOf(false) }
+    var pairStatus by remember { mutableStateOf("") }
+    val pairMpm = remember { context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager }
+    val pairLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val data = result.data
+        if (result.resultCode == Activity.RESULT_OK && data != null) {
+            AutoPair.startCapture(context, result.resultCode, data)
+            // 先授权录屏再打开配对页，避免从后台 Activity 发起授权被系统丢弃
+            AutoPair.openPairingPage(context)
+            scope.launch {
+                pairStatus = AutoPair.runAutoPair(context) { s -> pairStatus = s }
+                pairing = false
+                vm.onDevicePairSuccess()
+            }
+        } else {
+            pairing = false
+            pairStatus = "未获得录屏授权，配对中止"
+        }
+    }
     val drawerState = rememberDrawerState(androidx.compose.material3.DrawerValue.Closed)
     var showModels by rememberSaveable { mutableStateOf(false) }
     var editingIndex by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -275,30 +297,47 @@ fun ChatScreen(
                 )
             },
             bottomBar = {
-                ChatInputBar(
-                    state = state,
-                    onSend = { text -> vm.sendMessage(text) },
-                    onStop = { vm.stop() },
-                    onPick = { kind ->
-                        when (kind) {
-                            AttachmentKind.IMAGE -> pickImages.launch("image/*")
-                            AttachmentKind.FILE -> pickFile.launch("*/*")
-                            AttachmentKind.VIDEO -> pickVideo.launch("video/*")
-                        }
-                    },
-                    onRemoveAttachment = { id -> vm.removePendingAttachment(id) },
-                    onPluginImage = { text -> pluginKind = PluginKind.IMAGE_GEN; pluginDraft = text },
-                    onPluginVideo = { text -> pluginKind = PluginKind.VIDEO_GEN; pluginDraft = text },
-                    onPluginFile = { text -> pluginKind = PluginKind.FILE_EDIT; pluginDraft = text },
-                    onVoiceCall = {
-                        pendingCall = 0
-                        callLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
-                    },
-                    onVideoCall = {
-                        pendingCall = 1
-                        callLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+                Column {
+                    if (state.devicePairNeeded || pairing) {
+                        PairPromptBar(
+                            status = pairStatus,
+                            pairing = pairing,
+                            onPair = {
+                                pairing = true
+                                pairStatus = "请在系统弹窗中允许屏幕录制…"
+                                pairLauncher.launch(pairMpm.createScreenCaptureIntent())
+                            },
+                            onDismiss = {
+                                vm.dismissPairPrompt()
+                                pairStatus = ""
+                            }
+                        )
                     }
-                )
+                    ChatInputBar(
+                        state = state,
+                        onSend = { text -> vm.sendMessage(text) },
+                        onStop = { vm.stop() },
+                        onPick = { kind ->
+                            when (kind) {
+                                AttachmentKind.IMAGE -> pickImages.launch("image/*")
+                                AttachmentKind.FILE -> pickFile.launch("*/*")
+                                AttachmentKind.VIDEO -> pickVideo.launch("video/*")
+                            }
+                        },
+                        onRemoveAttachment = { id -> vm.removePendingAttachment(id) },
+                        onPluginImage = { text -> pluginKind = PluginKind.IMAGE_GEN; pluginDraft = text },
+                        onPluginVideo = { text -> pluginKind = PluginKind.VIDEO_GEN; pluginDraft = text },
+                        onPluginFile = { text -> pluginKind = PluginKind.FILE_EDIT; pluginDraft = text },
+                        onVoiceCall = {
+                            pendingCall = 0
+                            callLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
+                        },
+                        onVideoCall = {
+                            pendingCall = 1
+                            callLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+                        }
+                    )
+                }
             }
         ) { padding ->
             Box(
@@ -646,6 +685,31 @@ private fun HistoryDrawer(
             }
         }
         Spacer(Modifier.navigationBarsPadding().height(16.dp))
+    }
+}
+
+/** 无线调试未配对提示条：一键进入「配对码页面 + 录屏 OCR 自动配对」流程。 */
+@Composable
+private fun PairPromptBar(status: String, pairing: Boolean, onPair: () -> Unit, onDismiss: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                status.ifBlank { "无线调试未配对，点击一键配对" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onPair, enabled = !pairing) { Text(if (pairing) "配对中…" else "一键配对") }
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Rounded.Close, contentDescription = "关闭", modifier = Modifier.size(18.dp))
+            }
+        }
     }
 }
 

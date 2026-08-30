@@ -4,17 +4,11 @@ import com.xs.chat.BuildConfig
 import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
-import android.provider.Settings
 import androidx.compose.material3.TextButton
-import com.wirelessdebug.PairState
-import com.wirelessdebug.WdbContext
-import com.wirelessdebug.service.AdbPairClient
 import com.wirelessdebug.service.AdbShellController
 import com.wirelessdebug.service.PairCaptureService
-import com.wirelessdebug.service.ScreenOcr
-import com.xs.chat.wireless.MediaProjectionCapture
+import com.xs.chat.wireless.AutoPair
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -61,6 +55,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
 import android.app.Activity
+import android.provider.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -105,9 +100,11 @@ import com.xs.chat.data.CallRole
 import com.xs.chat.data.SettingsStore
 import com.xs.chat.mcp.McpServer
 import com.xs.chat.sandbox.Sandbox
+import com.wirelessdebug.service.AccessibilityDevice
 import com.wirelessdebug.service.RootController
 import com.wirelessdebug.service.ShizukuController
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -132,6 +129,7 @@ fun SettingsScreen(
     var roleExpanded by remember { mutableStateOf(false) }
     var showRoleDialog by remember { mutableStateOf(false) }
     var memoryLimitInput by rememberSaveable(state.memoryLimit) { mutableStateOf(state.memoryLimit.toString()) }
+    var memoryExpanded by rememberSaveable { mutableStateOf(false) }
     val lang = LocalLanguage.current
     val context = LocalContext.current
 
@@ -263,7 +261,7 @@ fun SettingsScreen(
             // ---------- 设备控制（类 Codex 电脑版） ----------
             SectionTitle("设备控制（类 Codex 电脑版）")
             Text(
-                "直接操控手机：打开应用 / 点击 / 滑动 / 输入 / 读屏。聊天里说「打开微信」「点一下登录」「读屏」即可触发。通道优先级：Root 最高权限 → 无线调试 → Shizuku。",
+                "直接操控手机：打开应用 / 点击 / 滑动 / 输入 / 读屏（读屏不截图，基于节点树识别）。聊天里说「打开微信」「点一下登录」「读屏」即可触发；「打开抖音搜索华为手机并点进第一个视频」等复杂指令由内置离线引擎本地智能执行，无需联网。通道优先级：Root 最高权限 → 无线调试 → Shizuku → 无障碍（免 Root，与无线调试二选一）。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -289,7 +287,8 @@ fun SettingsScreen(
                     Text(
                         "非 Root 通道：" + listOfNotNull(
                             if (AdbShellController.isConnected()) "无线调试已连接" else "无线调试未连接",
-                            if (ShizukuController.hasPermission()) "Shizuku 已授权" else "Shizuku 未授权"
+                            if (ShizukuController.hasPermission()) "Shizuku 已授权" else "Shizuku 未授权",
+                            if (AccessibilityDevice.isEnabled()) "无障碍已开启" else "无障碍未开启"
                         ).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -341,8 +340,10 @@ fun SettingsScreen(
                 svc.putExtra("resultCode", result.resultCode)
                 svc.putExtra("data", result.data)
                 runCatching { ContextCompat.startForegroundService(context, svc) }
+                // 授权完成后打开配对码页面（先授权后开页，避免后台发起授权被系统丢弃）
+                AutoPair.openPairingPage(context)
                 wdbScope.launch {
-                    wdbStatus = autoPairLoop(context) { msg -> wdbStatus = msg }
+                    wdbStatus = AutoPair.runAutoPair(context) { msg -> wdbStatus = msg }
                     wdbTesting = false
                 }
             }
@@ -351,30 +352,7 @@ fun SettingsScreen(
                 Button(
                     onClick = {
                         wdbTesting = true
-                        wdbStatus = "正在打开无线调试页面，请在系统弹窗中允许屏幕录制…"
-                        runCatching {
-                            val action = if (android.os.Build.VERSION.SDK_INT >= 30)
-                                "android.settings.WIRELESS_DEBUGGING_SETTINGS"
-                            else Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
-                            val i = Intent(action)
-                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            context.startActivity(i)
-                        }.onFailure {
-                            // 部分 ROM（ColorOS 等）不支持 WIRELESS_DEBUGGING_SETTINGS：
-                            // 用 :settings:fragment extra 直达「无线调试」子页，最后才回退开发者选项页
-                            runCatching {
-                                val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                                i.putExtra(":settings:fragment", "com.android.settings.development.WirelessDebuggingFragment")
-                                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(i)
-                            }.onFailure {
-                                runCatching {
-                                    val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                    context.startActivity(i)
-                                }
-                            }
-                        }
+                        wdbStatus = "请在系统弹窗中允许屏幕录制…"
                         captureLauncher.launch(mpm.createScreenCaptureIntent())
                     },
                     enabled = !wdbTesting
@@ -387,6 +365,38 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
                 )
+            }
+
+            // ---------- 无障碍控制（免 Root，与无线调试二选一） ----------
+            SectionTitle("无障碍控制（免 Root）")
+            Text(
+                "与上方「无线调试」二选一操控手机：开启系统无障碍后，无需 Root / 无线调试 / Shizuku 即可读屏（不截图）并点击、滑动、输入。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var a11yEnabled by remember { mutableStateOf(AccessibilityDevice.isEnabled()) }
+            LaunchedEffect(Unit) {
+                // 从系统无障碍设置返回后自动刷新状态
+                while (true) {
+                    a11yEnabled = AccessibilityDevice.isEnabled()
+                    delay(1500)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "无障碍服务：" + if (a11yEnabled) "已开启" else "未开启",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = {
+                    runCatching {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    }.onFailure {
+                        Toast.makeText(context, "无法打开无障碍设置", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("去开启") }
             }
 
             SectionTitle(Lang.t(lang, "api_settings"))
@@ -619,21 +629,34 @@ fun SettingsScreen(
                     Spacer(Modifier.width(4.dp))
                     Text(Lang.t(lang, "memory_clear"))
                 }
-            }
-            if (state.memoryLog.isEmpty()) {
-                Text(
-                    Lang.t(lang, "memory_empty"),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                state.memoryLog.take(50).forEach { line ->
-                    Text(
-                        line,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                IconButton(
+                    onClick = { memoryExpanded = !memoryExpanded },
+                    enabled = state.memoryLog.isNotEmpty()
+                ) {
+                    Icon(
+                        if (memoryExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (memoryExpanded) Lang.t(lang, "collapse") else Lang.t(lang, "expand_all").format(state.memoryLog.size),
+                        modifier = Modifier.size(20.dp)
                     )
+                }
+            }
+            // 默认折叠：记录列表展开时再渲染，避免占用过长屏幕
+            if (memoryExpanded) {
+                if (state.memoryLog.isEmpty()) {
+                    Text(
+                        Lang.t(lang, "memory_empty"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    state.memoryLog.take(50).forEach { line ->
+                        Text(
+                            line,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                        )
+                    }
                 }
             }
             Spacer(Modifier.height(8.dp))
@@ -1184,87 +1207,3 @@ private fun MediaParamRow(
         }
     }
 }
-
-
-/** 一键自动配对：发现配对端口 + 截屏 OCR 识别 6 位配对码 + 自动配对，90 秒超时。 */
-private suspend fun autoPairLoop(context: Context, onStatus: (String) -> Unit): String {
-    WdbContext.init(context)
-    // 必须离开 Compose 帧时钟调度器：App 后台时帧停止会冻结轮询，改在时间基准的 Default 调度器运行
-    return withContext(Dispatchers.Default) {
-        val deadline = System.currentTimeMillis() + 90_000
-        var lastError = ""
-        var pairError = ""
-        val tryCount = mutableMapOf<String, Int>()
-        while (System.currentTimeMillis() < deadline) {
-            val result = withContext(Dispatchers.IO) {
-                val bmp = MediaProjectionCapture.capture()
-                val ocrText = if (bmp != null) ScreenOcr.recognize(bmp) else null
-                // 配对弹窗可见时，IP:端口与 6 位码都从 OCR 文本直读，不依赖缓慢且不可靠的 mDNS/扫描
-                val port = extractPairPort(ocrText) ?: -1
-                val code = extractPairCode(ocrText)
-                android.util.Log.d("AutoPair", "port=$port code=$code ocr=${ocrText?.take(120)}")
-                Triple(port, code, bmp != null)
-            }
-            val (port, code, captureOk) = result
-            // 仅在端口与码均由 OCR 从配对弹窗直接读出时才尝试配对，避免拿错误码去探对任意端口
-            if (port > 0 && code != null && (tryCount[code] ?: 0) < 2) {
-                tryCount[code] = (tryCount[code] ?: 0) + 1
-                val r = withContext(Dispatchers.IO) { AdbPairClient.pair("127.0.0.1", port, code) }
-                android.util.Log.d("AutoPair", "pair($port,$code) ok=${r.ok} msg=${r.message}")
-                if (r.ok) {
-                    PairState.markPaired(context)
-                    stopPairCapture(context)
-                    // shell 通道后台建立，不阻塞「配对成功」即时反馈
-                    Thread({ runCatching { AdbShellController.ensureConnected() } }, "adb-ensure-conn").start()
-                    return@withContext "配对成功！端口 $port，ADB 通道已建立"
-                }
-                pairError = "配对尝试失败：" + r.message
-                onStatus(pairError)
-            } else {
-                lastError = when {
-                    port <= 0 -> "未找到配对端口，请停留在「使用配对码配对设备」页面"
-                    !captureOk -> "正在等待录屏授权生效…"
-                    else -> if (code != null) "正在校验 $code…" else "正在识别配对码…"
-                }
-                onStatus(lastError)
-            }
-            delay(if (code != null || port > 0) 400 else if (!captureOk) 400 else 500)
-        }
-        stopPairCapture(context)
-        return@withContext "配对超时：" + (pairError.ifBlank { lastError }).ifBlank { "请确认无线调试已开启并停留在配对页面" }
-    }
-}
-
-/** 配对码 OCR 增强：字母误识别映射回数字（O→0/I→1 等），逐行优先匹配独立 6 位数字。 */
-private fun extractPairCode(text: String?): String? {
-    if (text == null) return null
-    val fixed = text.map { c ->
-        when (c) {
-            'O', 'o' -> '0'; 'I', 'l' -> '1'; 'Z' -> '2'; 'S', 's' -> '5'
-            'B' -> '8'; 'G' -> '6'; 'T' -> '7'; else -> c
-        }
-    }.joinToString("")
-    for (line in fixed.split("\n")) {
-        Regex("""(?<!\d)\d{6}(?!\d)""").find(line)?.let { return it.value }
-    }
-    Regex("""(?<!\d)\d{6}(?!\d)""").find(fixed)?.let { return it.value }
-    val compact = fixed.replace(Regex("""[^0-9]"""), "")
-    return Regex("""\d{6}""").find(compact)?.value
-}
-
-/** 从配对页 OCR 文本提取配对端口（IP:端口 格式，端口 4-5 位）。 */
-private fun extractPairPort(text: String?): Int? {
-    if (text == null) return null
-    val fixed = text.map { c ->
-        when (c) {
-            'O', 'o' -> '0'; 'I', 'l' -> '1'; 'Z' -> '2'; 'S', 's' -> '5'
-            'B' -> '8'; 'G' -> '6'; 'T' -> '7'; else -> c
-        }
-    }.joinToString("")
-    return Regex("""\d{1,3}(?:\.\d{1,3}){3}:(\d{4,5})""").find(fixed)?.groupValues?.get(1)?.toIntOrNull()
-}
-
-private fun stopPairCapture(context: Context) {
-    runCatching { context.stopService(Intent(context, PairCaptureService::class.java)) }
-}
-

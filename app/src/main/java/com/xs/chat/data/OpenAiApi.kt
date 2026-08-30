@@ -69,6 +69,9 @@ class OpenAiApi(
     ): Boolean {
         cancelled = false
         val c = open("POST", endpoint("/chat/completions"))
+        // SSE 专用头：防止中间层缓冲导致首 token 延迟
+        c.setRequestProperty("Accept", "text/event-stream")
+        c.setRequestProperty("Cache-Control", "no-cache")
         var keepAlive = false
         try {
             val req = JsonObject()
@@ -142,12 +145,15 @@ class OpenAiApi(
 
     /**
      * 非流式补全：一次性返回完整文本（用于文件编辑等内置插件）。
+     * [imageDataUrl] 非空时，最后一条 user 消息附带一张图片（data URL，如 "data:image/jpeg;base64,..."），
+     * 用于设备控制 Agent 的视觉读屏。
      */
     fun completeChat(
         model: String,
         systemPrompt: String?,
         userMessages: List<Pair<String, String>>,
         temperature: Float,
+        imageDataUrl: String? = null,
         onUsage: ((Usage) -> Unit)? = null
     ): String {
         cancelled = false
@@ -160,7 +166,27 @@ class OpenAiApi(
             req.addProperty("temperature", temperature)
             val arr = com.google.gson.JsonArray()
             if (!systemPrompt.isNullOrBlank()) arr.add(jsonMessage("system", systemPrompt))
-            userMessages.forEach { (role, content) -> arr.add(jsonMessage(role, content)) }
+            userMessages.forEach { (role, content) ->
+                if (imageDataUrl != null && role == "user") {
+                    val obj = JsonObject()
+                    obj.addProperty("role", role)
+                    val contentArr = com.google.gson.JsonArray()
+                    val textPart = JsonObject()
+                    textPart.addProperty("type", "text")
+                    textPart.addProperty("text", content)
+                    val imgPart = JsonObject()
+                    imgPart.addProperty("type", "image_url")
+                    val imgObj = JsonObject()
+                    imgObj.addProperty("url", imageDataUrl)
+                    imgPart.add("image_url", imgObj)
+                    contentArr.add(textPart)
+                    contentArr.add(imgPart)
+                    obj.add("content", contentArr)
+                    arr.add(obj)
+                } else {
+                    arr.add(jsonMessage(role, content))
+                }
+            }
             req.add("messages", arr)
             c.outputStream.use {
                 it.write(req.toString().toByteArray(StandardCharsets.UTF_8))

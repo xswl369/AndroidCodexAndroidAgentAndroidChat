@@ -66,7 +66,8 @@ data class PickedAttachment(
 /** 模型是否可能支持图片/视频理解（用于实时视觉智能调度）。 */
 fun looksVisionCapable(modelId: String): Boolean {
     val id = modelId.lowercase()
-    if (id.contains("agnes")) return id.contains("pro")
+    // agnes 系聊天模型（flash/pro 等）实测支持 image_url 视觉输入；图像/视频生成模型除外
+    if (id.contains("agnes")) return !id.contains("image") && !id.contains("video")
     return listOf(
         "4o", "4.1", "gpt-4", "gpt-5", "gemini", "qwen", "-vl", "vision",
         "internvl", "minicpm", "glm-4v", "llava", "claude", "molmo",
@@ -129,5 +130,4 @@ data class ApiConfig(
     val baseUrl: String,
     val apiKey: String
 )
-
 

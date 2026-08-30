@@ -18,4 +18,6 @@
     <string name="fgs_channel_name">后台运行</string>
     <string name="fgs_notification_text">无线调试通道运行中，请勿强制停止</string>
     <string name="fgs_notification_title">无线调试助手运行中</string>
+    <string name="accessibility_service_label">XS Chat 无障碍控制</string>
+    <string name="accessibility_service_desc">免 Root 控制手机：读取屏幕内容（不截图）并执行点击、滑动、输入等操作。与无线调试二选一。</string>
 </resources>

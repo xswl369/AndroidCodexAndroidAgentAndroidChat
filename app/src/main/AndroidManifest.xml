@@ -63,6 +63,20 @@
                 android:value="keep wireless debug pairing and shell channel alive" />
         </service>
 
+        <!-- 免 Root 无障碍控制通道：与无线调试二选一，读屏不截图 -->
+        <service
+            android:name="com.wirelessdebug.service.AccessibilityControlService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -76,4 +90,3 @@
     </application>
 
 </manifest>
-
