@@ -1,17 +1,24 @@
 package com.xs.chat.ui
 
 import com.xs.chat.BuildConfig
+import android.content.Context
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.provider.Settings
 import androidx.compose.material3.TextButton
 import com.wirelessdebug.PairState
 import com.wirelessdebug.WdbContext
 import com.wirelessdebug.service.AdbPairClient
 import com.wirelessdebug.service.AdbShellController
+import com.wirelessdebug.service.PairCaptureService
+import com.wirelessdebug.service.ScreenOcr
+import com.xs.chat.wireless.MediaProjectionCapture
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.core.content.ContextCompat
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
 
@@ -52,6 +59,7 @@ import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.vector.ImageVector
+import android.app.Activity
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -233,224 +241,62 @@ fun SettingsScreen(
                     Text("x", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            // ---------- 无线调试（ADB over Wi-Fi，内置配对组件） ----------
+            // ---------- 无线调试（一键自动配对） ----------
             SectionTitle("无线调试")
             Text(
-                "免电脑无线调试：内置 SPAKE2 配对协议 + ADB shell 控制通道，配对后可直接在本机执行 shell 命令。",
+                "使用步骤：① 打开开发者模式 → ② 开启无线调试 → ③ 进入「使用配对码配对设备」页面。完成后点击下方「开始配对」并允许屏幕录制，配对码将自动识别、配对自动完成。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             var wdbTesting by remember { mutableStateOf(false) }
             var wdbStatus by remember { mutableStateOf("") }
-            var pairDialog by remember { mutableStateOf(false) }
-            var pairCode by remember { mutableStateOf("") }
             val wdbScope = rememberCoroutineScope()
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = {
-                    runCatching {
-                        val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
-                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(i)
-                    }
-                }) { Text("打开无线调试设置") }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = { pairDialog = true }, enabled = !wdbTesting) { Text("开始配对") }
+            val mpm = remember { context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager }
+            val captureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+                if (result.resultCode != Activity.RESULT_OK || result.data == null) {
+                    wdbStatus = "未获得屏幕录制授权，配对中止（请重新点击开始配对）"
+                    wdbTesting = false
+                    return@rememberLauncherForActivityResult
+                }
+                // 先启动前台截屏服务（Android 14+ 要求先起前台服务再取 MediaProjection）
+                val svc = Intent(context, PairCaptureService::class.java)
+                svc.putExtra("resultCode", result.resultCode)
+                svc.putExtra("data", result.data)
+                runCatching { ContextCompat.startForegroundService(context, svc) }
+                wdbScope.launch {
+                    wdbStatus = autoPairLoop(context) { msg -> wdbStatus = msg }
+                    wdbTesting = false
+                }
             }
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = {
-                    wdbTesting = true
-                    wdbScope.launch {
-                        wdbStatus = withContext(Dispatchers.IO) {
-                            WdbContext.init(context)
-                            val ok = AdbShellController.ensureConnected()
-                            if (ok) "已连接（ADB shell 通道就绪）" else "未连接：请先开启无线调试并配对"
-                        }
-                        wdbTesting = false
-                    }
-                }, enabled = !wdbTesting) { Text("检测连接") }
-                Spacer(Modifier.width(8.dp))
-                OutlinedButton(onClick = {
-                    wdbTesting = true
-                    wdbScope.launch {
-                        wdbStatus = withContext(Dispatchers.IO) {
-                            WdbContext.init(context)
-                            val ok = AdbShellController.ensureConnected()
-                            if (!ok) "未连接：请先开启无线调试并配对"
-                            else {
-                                val r = AdbShellController.exec("getprop ro.product.model; getprop ro.build.version.release")
-                                if (r.ok) "命令成功：" + r.output.trim() else "命令失败：" + r.output.trim()
+                Button(
+                    onClick = {
+                        wdbTesting = true
+                        wdbStatus = "正在打开无线调试页面，请在系统弹窗中允许屏幕录制…"
+                        runCatching {
+                            val action = if (android.os.Build.VERSION.SDK_INT >= 30)
+                                "android.settings.WIRELESS_DEBUGGING_SETTINGS"
+                            else Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS
+                            val i = Intent(action)
+                            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(i)
+                        }.onFailure {
+                            // 部分 ROM（ColorOS 等）不支持直达无线调试页，回退开发者选项页
+                            runCatching {
+                                val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(i)
                             }
                         }
-                        wdbTesting = false
-                    }
-                }, enabled = !wdbTesting) { Text("测试命令") }
+                        captureLauncher.launch(mpm.createScreenCaptureIntent())
+                    },
+                    enabled = !wdbTesting
+                ) { Text("开始配对") }
             }
             if (wdbStatus.isNotBlank()) {
                 Text(
                     wdbStatus,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp)
-                )
-            }
-            if (pairDialog) {
-                AlertDialog(
-                    onDismissRequest = { pairDialog = false },
-                    title = { Text("无线调试配对") },
-                    text = {
-                        Column {
-                            Text(
-                                "请先在「设置 → 开发者选项 → 无线调试 → 使用配对码配对设备」页面开启，然后输入页面上显示的 6 位配对码：",
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedTextField(
-                                value = pairCode,
-                                onValueChange = { pairCode = it.filter { c -> c.isDigit() }.take(6) },
-                                label = { Text("配对码") },
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                if (pairCode.length == 6) {
-                                    pairDialog = false
-                                    wdbTesting = true
-                                    wdbScope.launch {
-                                        wdbStatus = withContext(Dispatchers.IO) {
-                                            WdbContext.init(context)
-                                            var port = AdbShellController.findPairPort(context)
-                                            if (port <= 0) port = AdbShellController.scanPairPort()
-                                            if (port <= 0) "未发现配对端口：请停留在「使用配对码配对设备」页面再试"
-                                            else {
-                                                val r = AdbPairClient.pair("127.0.0.1", port, pairCode)
-                                                if (r.ok) {
-                                                    PairState.markPaired(context)
-                                                    AdbShellController.ensureConnected()
-                                                    "配对成功（端口 $port），ADB shell 通道已建立"
-                                                } else "配对失败：" + r.message
-                                            }
-                                        }
-                                        wdbTesting = false
-                                    }
-                                }
-                            }
-                        ) { Text("配对") }
-                    },
-                    dismissButton = { TextButton(onClick = { pairDialog = false }) { Text("取消") } }
-                )
-            }
-            // ---------- 沙盒（与 Codex 一致：隔离危险命令与越权写路径） ----------
-            SectionTitle("沙盒")
-            Text(
-                "与 Codex 沙盒同理念：开启后拦截破坏性 shell 命令（删除/格式化/重启/提权/写系统分区），写路径仅限应用私有目录与用户文件；外部 MCP 调用强制走沙盒。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            val settingsStore = remember { SettingsStore(context) }
-            var sandboxOn by rememberSaveable(settingsStore.sandboxEnabled) { mutableStateOf(settingsStore.sandboxEnabled) }
-            var sandboxLog by remember { mutableStateOf(Sandbox.log.value) }
-            LaunchedEffect(sandboxOn) {
-                settingsStore.sandboxEnabled = sandboxOn
-                Sandbox.enabled = sandboxOn
-            }
-            LaunchedEffect(Unit) {
-                Sandbox.log.collect { sandboxLog = it }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = sandboxOn, onCheckedChange = { sandboxOn = it })
-                Spacer(Modifier.width(8.dp))
-                Text(if (sandboxOn) "沙盒已开启" else "沙盒已关闭", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = { Sandbox.clearLog() }) { Text("清空日志") }
-            }
-            if (sandboxLog.isNotEmpty()) {
-                sandboxLog.takeLast(5).forEach { entry ->
-                    Text(
-                        entry,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 2.dp)
-                    )
-                }
-            }
-
-            // ---------- MCP 服务（外部连接） ----------
-            SectionTitle("MCP 服务")
-            Text(
-                "内置 MCP server（Streamable HTTP）：PC 上执行 adb forward tcp:8765 tcp:8765 后，外部客户端（如 Codex）可连接 http://127.0.0.1:8765/message，调用设备信息 / shell 执行等工具。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            var mcpOn by rememberSaveable(settingsStore.mcpEnabled) { mutableStateOf(settingsStore.mcpEnabled) }
-            var mcpPortText by rememberSaveable(settingsStore.mcpPort) { mutableStateOf(settingsStore.mcpPort.toString()) }
-            var mcpStatus by remember { mutableStateOf(McpServer.state.value) }
-            val mcpScope = rememberCoroutineScope()
-            LaunchedEffect(mcpOn) {
-                settingsStore.mcpEnabled = mcpOn
-                if (mcpOn) {
-                    withContext(Dispatchers.IO) { McpServer.start(settingsStore.mcpPort) }
-                } else {
-                    McpServer.stop()
-                }
-            }
-            LaunchedEffect(Unit) {
-                McpServer.state.collect { mcpStatus = it }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(checked = mcpOn, onCheckedChange = { mcpOn = it })
-                Spacer(Modifier.width(8.dp))
-                Text(if (mcpOn) "MCP 服务运行中" else "MCP 服务已关闭", style = MaterialTheme.typography.bodyMedium)
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    "端口",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.width(64.dp)
-                )
-                TextField(
-                    value = mcpPortText,
-                    onValueChange = { input ->
-                        val clean = input.filter { it.isDigit() }.take(5)
-                        mcpPortText = clean
-                        clean.toIntOrNull()?.let { v ->
-                            settingsStore.mcpPort = v
-                            if (mcpOn) {
-                                mcpScope.launch {
-                                    withContext(Dispatchers.IO) {
-                                        McpServer.stop()
-                                        McpServer.start(v)
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        disabledContainerColor = Color.Transparent,
-                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
-                        unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
-                        errorIndicatorColor = MaterialTheme.colorScheme.error
-                    ),
-                    modifier = Modifier.width(110.dp)
-                )
-            }
-            if (mcpStatus.isNotBlank()) {
-                Text(
-                    mcpStatus,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp)
@@ -1252,3 +1098,89 @@ private fun MediaParamRow(
         }
     }
 }
+
+
+/** 一键自动配对：发现配对端口 + 截屏 OCR 识别 6 位配对码 + 自动配对，90 秒超时。 */
+private suspend fun autoPairLoop(context: Context, onStatus: (String) -> Unit): String {
+    WdbContext.init(context)
+    val deadline = System.currentTimeMillis() + 90_000
+    var lastError = ""
+    var lastScanMs = 0L
+    var pairError = ""
+    val tryCount = mutableMapOf<String, Int>()
+    while (System.currentTimeMillis() < deadline) {
+        val result = withContext(Dispatchers.IO) {
+            val bmp = MediaProjectionCapture.capture()
+            val ocrText = if (bmp != null) ScreenOcr.recognize(bmp) else null
+            var port = AdbShellController.findPairPort(context)
+            // OCR 直读配对页上的端口（IP:端口），比 mDNS 更快更可靠
+            if (port <= 0) port = extractPairPort(ocrText) ?: -1
+            // mDNS 不可靠的 ROM（ColorOS 等）定期重扫本机监听端口兜底
+            if (port <= 0 && System.currentTimeMillis() - lastScanMs > 6000) {
+                port = AdbShellController.scanPairPort()
+                lastScanMs = System.currentTimeMillis()
+            }
+            val code = extractPairCode(ocrText)
+            android.util.Log.d("AutoPair", "port=$port code=$code ocr=${ocrText?.take(120)}")
+            Triple(port, code, bmp != null)
+        }
+        val (port, code, captureOk) = result
+        if (port > 0 && code != null && (tryCount[code] ?: 0) < 2) {
+            tryCount[code] = (tryCount[code] ?: 0) + 1
+            val r = withContext(Dispatchers.IO) { AdbPairClient.pair("127.0.0.1", port, code) }
+            android.util.Log.d("AutoPair", "pair($port,$code) ok=${r.ok} msg=${r.message}")
+            if (r.ok) {
+                PairState.markPaired(context)
+                AdbShellController.ensureConnected()
+                stopPairCapture(context)
+                return "配对成功（端口 $port），ADB shell 通道已建立"
+            }
+            pairError = "配对尝试失败：" + r.message
+            onStatus(pairError)
+        } else {
+            lastError = when {
+                port <= 0 -> "未发现配对端口：请停留在「使用配对码配对设备」页面"
+                !captureOk -> "正在等待录屏授权生效…"
+                else -> if (code != null) "配对中（码 $code）…" else "正在识别配对码…"
+            }
+            onStatus(lastError)
+        }
+        delay(1500)
+    }
+    stopPairCapture(context)
+    return "配对超时：" + (pairError.ifBlank { lastError }).ifBlank { "请确认无线调试已开启并停留在配对页面" }
+}
+
+/** 配对码 OCR 增强：字母误识别映射回数字（O→0/I→1 等），逐行优先匹配独立 6 位数字。 */
+private fun extractPairCode(text: String?): String? {
+    if (text == null) return null
+    val fixed = text.map { c ->
+        when (c) {
+            'O', 'o' -> '0'; 'I', 'l' -> '1'; 'Z' -> '2'; 'S', 's' -> '5'
+            'B' -> '8'; 'G' -> '6'; 'T' -> '7'; else -> c
+        }
+    }.joinToString("")
+    for (line in fixed.split("\n")) {
+        Regex("""(?<!\d)\d{6}(?!\d)""").find(line)?.let { return it.value }
+    }
+    Regex("""(?<!\d)\d{6}(?!\d)""").find(fixed)?.let { return it.value }
+    val compact = fixed.replace(Regex("""[^0-9]"""), "")
+    return Regex("""\d{6}""").find(compact)?.value
+}
+
+/** 从配对页 OCR 文本提取配对端口（IP:端口 格式，端口 4-5 位）。 */
+private fun extractPairPort(text: String?): Int? {
+    if (text == null) return null
+    val fixed = text.map { c ->
+        when (c) {
+            'O', 'o' -> '0'; 'I', 'l' -> '1'; 'Z' -> '2'; 'S', 's' -> '5'
+            'B' -> '8'; 'G' -> '6'; 'T' -> '7'; else -> c
+        }
+    }.joinToString("")
+    return Regex("""\d{1,3}(?:\.\d{1,3}){3}:(\d{4,5})""").find(fixed)?.groupValues?.get(1)?.toIntOrNull()
+}
+
+private fun stopPairCapture(context: Context) {
+    runCatching { context.stopService(Intent(context, PairCaptureService::class.java)) }
+}
+

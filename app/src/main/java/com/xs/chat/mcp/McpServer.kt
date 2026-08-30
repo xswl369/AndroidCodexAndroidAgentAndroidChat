@@ -213,7 +213,7 @@ object McpServer {
                 val ctx = appContext
                 if (ctx == null) return rpcError(id, "应用上下文未初始化")
                 WdbContext.init(ctx)
-                if (!AdbShellController.isConnected()) {
+                if (!AdbShellController.isConnected() && !AdbShellController.ensureConnected()) {
                     return rpcError(id, "无线调试通道未连接，请先在设置页开启无线调试并配对")
                 }
                 val r = AdbShellController.exec(cmd)
