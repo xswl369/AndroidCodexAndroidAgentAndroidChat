@@ -55,6 +55,11 @@ class SettingsStore(context: Context) {
         get() = sp.getBoolean(KEY_SANDBOX_ENABLED, true)
         set(value) = sp.edit().putBoolean(KEY_SANDBOX_ENABLED, value).apply()
 
+    /** Root 最高权限控制开关（默认开启：已 root 设备直接以 uid 0 操控手机）。 */
+    var rootControlEnabled: Boolean
+        get() = sp.getBoolean(KEY_ROOT_CONTROL_ENABLED, true)
+        set(value) = sp.edit().putBoolean(KEY_ROOT_CONTROL_ENABLED, value).apply()
+
     var mcpEnabled: Boolean
         get() = sp.getBoolean(KEY_MCP_ENABLED, false)
         set(value) = sp.edit().putBoolean(KEY_MCP_ENABLED, value).apply()
@@ -89,6 +94,7 @@ class SettingsStore(context: Context) {
         const val KEY_VIDEO_DURATION = "video_duration"
         const val KEY_MEMORY_LIMIT = "memory_limit"
         const val KEY_SANDBOX_ENABLED = "sandbox_enabled"
+        const val KEY_ROOT_CONTROL_ENABLED = "root_control_enabled"
         const val KEY_MCP_ENABLED = "mcp_enabled"
         const val KEY_MCP_PORT = "mcp_port"
         const val KEY_CALL_ROLE_ID = "call_role_id"

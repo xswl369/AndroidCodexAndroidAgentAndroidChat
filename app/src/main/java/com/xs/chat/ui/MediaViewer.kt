@@ -5,10 +5,13 @@ import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
 import android.widget.VideoView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -65,11 +68,37 @@ fun MediaViewerDialog(attachment: Attachment, onDismiss: () -> Unit) {
                     else Text("图片加载失败", color = Color.White, modifier = Modifier.align(Alignment.Center))
                 }
                 AttachmentKind.VIDEO -> VideoViewer(attachment.uri, videoHolder)
-                else -> Text(attachment.name, color = Color.White, modifier = Modifier.align(Alignment.Center))
+                else -> TextFileViewer(attachment.uri)
             }
             ViewerTopBar(attachment, videoHolder.value, onDismiss)
         }
     }
+}
+
+/** 文本文件查看：应用内滚动展示内容（最多 200KB），点击保存可导出到下载目录。 */
+@Composable
+private fun TextFileViewer(uri: String) {
+    val context = LocalContext.current
+    val text = produceState(initialValue = "加载中…", uri) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val f = File(Uri.parse(uri).path ?: return@runCatching "文件不存在")
+                if (!f.exists()) "文件不存在"
+                else if (f.length() > 200 * 1024) "文件超过 200KB，仅展示前 200KB\n\n" +
+                    f.readBytes().copyOf(200 * 1024).toString(Charsets.UTF_8)
+                else f.readText(Charsets.UTF_8)
+            }.getOrDefault("读取失败")
+        }
+    }.value
+    Text(
+        text.removePrefix("\uFEFF"),
+        color = Color.White,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp)
+    )
 }
 
 /** 图片查看：双指缩放（0.2x-8x）+ 拖动平移，双击复位。 */
@@ -177,7 +206,7 @@ private fun ViewerTopBar(attachment: Attachment, videoView: VideoView?, onDismis
     }
 }
 
-/** 保存到系统相册/影片（API 29+ 免权限，MediaStore RELATIVE_PATH）。 */
+/** 保存到系统相册/影片/下载（API 29+ 免权限，MediaStore RELATIVE_PATH）。 */
 fun saveToStorage(context: Context, attachment: Attachment) {
     try {
         val path = Uri.parse(attachment.uri).path ?: return
@@ -187,17 +216,24 @@ fun saveToStorage(context: Context, attachment: Attachment) {
             return
         }
         val isImage = attachment.kind == AttachmentKind.IMAGE
-        val mime = attachment.mimeType.ifBlank { if (isImage) "image/png" else "video/mp4" }
+        val isVideo = attachment.kind == AttachmentKind.VIDEO
+        val mime = attachment.mimeType.ifBlank { when { isImage -> "image/png"; isVideo -> "video/mp4"; else -> "text/plain" } }
         val values = android.content.ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, attachment.name)
             put(MediaStore.MediaColumns.MIME_TYPE, mime)
             if (Build.VERSION.SDK_INT >= 29) {
-                put(MediaStore.MediaColumns.RELATIVE_PATH, if (isImage) "Pictures/XS Chat" else "Movies/XS Chat")
+                put(
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    when { isImage -> "Pictures/XS Chat"; isVideo -> "Movies/XS Chat"; else -> Environment.DIRECTORY_DOWNLOADS + "/XS智能体" }
+                )
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
-        val collection = if (isImage) MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        val collection = when {
+            isImage -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            isVideo -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        }
         val out = context.contentResolver.insert(collection, values)
             ?: throw RuntimeException("无法创建存储条目")
         context.contentResolver.openOutputStream(out)!!.use { o -> src.inputStream().use { it.copyTo(o) } }
@@ -206,7 +242,11 @@ fun saveToStorage(context: Context, attachment: Attachment) {
             values.put(MediaStore.MediaColumns.IS_PENDING, 0)
             context.contentResolver.update(out, values, null, null)
         }
-        Toast.makeText(context, "已保存到 ${if (isImage) "相册/XS Chat" else "影片/XS Chat"}", Toast.LENGTH_SHORT).show()
+        Toast.makeText(
+            context,
+            "已保存到 " + when { isImage -> "相册/XS Chat"; isVideo -> "影片/XS Chat"; else -> "下载/XS智能体" },
+            Toast.LENGTH_SHORT
+        ).show()
     } catch (e: Exception) {
         Toast.makeText(context, "保存失败：${e.message}", Toast.LENGTH_SHORT).show()
     }

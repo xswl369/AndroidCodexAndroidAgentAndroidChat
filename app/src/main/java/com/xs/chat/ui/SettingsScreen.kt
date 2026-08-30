@@ -104,6 +104,8 @@ import com.xs.chat.data.CallRole
 import com.xs.chat.data.SettingsStore
 import com.xs.chat.mcp.McpServer
 import com.xs.chat.sandbox.Sandbox
+import com.wirelessdebug.service.RootController
+import com.wirelessdebug.service.ShizukuController
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -241,6 +243,61 @@ fun SettingsScreen(
                     Text("x", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            // ---------- 设备控制（类 Codex 电脑版） ----------
+            SectionTitle("设备控制（类 Codex 电脑版）")
+            Text(
+                "直接操控手机：打开应用 / 点击 / 滑动 / 输入 / 读屏。聊天里说「打开微信」「点一下登录」「读屏」即可触发。通道优先级：Root 最高权限 → 无线调试 → Shizuku。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var rootTesting by remember { mutableStateOf(false) }
+            var rootStatus by remember { mutableStateOf("") }
+            val rootScope = rememberCoroutineScope()
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Root 最高权限控制",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(checked = state.rootControlEnabled, onCheckedChange = { vm.setRootControl(it) })
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "状态：" + when {
+                        RootController.isRooted() -> "已获取 Root（uid 0）"
+                        ShizukuController.hasPermission() -> "Shizuku 已授权"
+                        AdbShellController.isConnected() -> "无线调试已连接"
+                        else -> "无可用通道（请配对无线调试或授权 Shizuku/Root）"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(
+                    onClick = {
+                        rootTesting = true
+                        rootStatus = "测试中…"
+                        rootScope.launch {
+                            rootStatus = withContext(Dispatchers.IO) {
+                                val r = RootController.exec("id")
+                                if (r.ok) "✅ Root 可用：${r.output}" else "❌ Root 不可用：${r.output}"
+                            }
+                            rootTesting = false
+                        }
+                    },
+                    enabled = !rootTesting
+                ) { Text("测试 Root") }
+            }
+            if (rootStatus.isNotBlank()) {
+                Text(
+                    rootStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
             // ---------- 无线调试（一键自动配对） ----------
             SectionTitle("无线调试")
             Text(

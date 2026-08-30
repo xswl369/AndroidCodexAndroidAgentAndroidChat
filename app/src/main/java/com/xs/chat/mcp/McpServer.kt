@@ -6,6 +6,7 @@ import com.xs.chat.BuildConfig
 import com.xs.chat.sandbox.Sandbox
 import com.wirelessdebug.WdbContext
 import com.wirelessdebug.service.AdbShellController
+import com.wirelessdebug.service.RootController
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.InetAddress
@@ -159,7 +160,7 @@ object McpServer {
         .put(tool("app_status", "获取本 App 运行状态（包名、版本、沙盒状态、MCP 端口）", JSONObject()
             .put("type", "object")
             .put("properties", JSONObject())))
-        .put(tool("shell_exec", "在沙盒内执行 shell 命令（破坏性/提权/写系统路径的命令会被拦截）", JSONObject()
+        .put(tool("shell_exec", "执行 shell 命令（破坏性/写系统路径的命令会被沙盒拦截；已 root 设备默认以最高权限执行）", JSONObject()
             .put("type", "object")
             .put("properties", JSONObject().put("command", JSONObject()
                 .put("type", "string")
@@ -189,6 +190,8 @@ object McpServer {
                     .put("versionName", BuildConfig.VERSION_NAME)
                     .put("versionCode", BuildConfig.VERSION_CODE)
                     .put("sandboxEnabled", Sandbox.enabled)
+                    .put("rootAvailable", RootController.isRooted())
+                    .put("rootMode", RootController.canUseRoot())
                     .put("mcpPort", port)
                     .put("mcpState", state.value)
                     .put("adbConnected", ctx != null && AdbShellController.isConnected())
@@ -213,6 +216,15 @@ object McpServer {
                 val ctx = appContext
                 if (ctx == null) return rpcError(id, "应用上下文未初始化")
                 WdbContext.init(ctx)
+                if (RootController.canUseRoot()) {
+                    val rr = if (cmd.trimStart().startsWith("uiautomator")) {
+                        RootController.execAsShell(cmd)
+                    } else {
+                        RootController.exec(cmd)
+                    }
+                    if (rr.ok) return rpcResult(id, textContent(rr.output))
+                    return rpcError(id, "root 执行失败：" + rr.output)
+                }
                 if (!AdbShellController.isConnected() && !AdbShellController.ensureConnected()) {
                     return rpcError(id, "无线调试通道未连接，请先在设置页开启无线调试并配对")
                 }

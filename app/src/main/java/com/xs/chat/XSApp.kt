@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import com.offlinevoice.input.VoskEngine
 import com.wirelessdebug.WdbContext
+import com.wirelessdebug.service.RootController
 import com.xs.chat.data.SettingsStore
 import com.xs.chat.mcp.McpServer
 import com.xs.chat.sandbox.Sandbox
@@ -33,6 +34,7 @@ class XSApp : Application() {
         // 沙盒状态与 MCP 服务按设置启动
         val settings = SettingsStore(this)
         Sandbox.enabled = settings.sandboxEnabled
+        RootController.enabled = settings.rootControlEnabled
         McpServer.appContext = this
         if (settings.mcpEnabled) {
             Thread { McpServer.start(settings.mcpPort) }.start()
@@ -41,6 +43,10 @@ class XSApp : Application() {
         Thread {
             runCatching { VoskEngine.ensureModel(applicationContext, "vosk-model-small-cn", {}, {}) }
         }.start()
+        // 预热 root 检测：后台探测 su 可用性，避免首次设备控制卡顿
+        if (RootController.enabled) {
+            Thread { RootController.isRooted() }.start()
+        }
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread: Thread, throwable: Throwable ->
             val now = System.currentTimeMillis()

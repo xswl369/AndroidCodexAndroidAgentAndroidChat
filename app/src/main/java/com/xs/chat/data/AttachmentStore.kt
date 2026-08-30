@@ -1,10 +1,14 @@
 package com.xs.chat.data
 
 import android.content.Context
+import android.content.ContentValues
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.OpenableColumns
+import android.provider.MediaStore
 import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileOutputStream
@@ -76,6 +80,37 @@ object AttachmentStore {
         val target = File(dir, System.currentTimeMillis().toString() + "_" + sanitize(originalName))
         target.writeText(content, Charsets.UTF_8)
         return target.absolutePath
+    }
+
+    /** 导出文本到公共下载目录 Download/XS智能体，返回展示路径；失败返回 null。 */
+    fun exportTextToDownloads(context: Context, fileName: String, content: String): String? {
+        return runCatching {
+            val name = sanitize(fileName)
+            if (Build.VERSION.SDK_INT >= 29) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, name)
+                    put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/XS智能体")
+                    put(MediaStore.Downloads.IS_PENDING, 1)
+                }
+                val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: return null
+                context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray(Charsets.UTF_8)) }
+                    ?: run { context.contentResolver.delete(uri, null, null); return null }
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+                "Download/XS智能体/$name"
+            } else {
+                val dir = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "XS智能体"
+                ).apply { mkdirs() }
+                val f = File(dir, name)
+                f.writeBytes(content.toByteArray(Charsets.UTF_8))
+                f.absolutePath
+            }
+        }.getOrNull()
     }
 
     fun queryName(context: Context, uri: Uri): String {

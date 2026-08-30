@@ -49,6 +49,14 @@ public class ShizukuController {
     /** 以 shell 身份执行命令并返回输出，超时 25s。 */
     public static ExecResult exec(String... cmd) {
         if (cmd != null && cmd.length > 0) {
+            // Root 模式（默认开启）：已 root 设备直接以最高权限执行。
+            // uiautomator 读屏在 SELinux 下拒绝 root，须以 shell(2000) 身份运行
+            if (RootController.canUseRoot()) {
+                RootController.Result rr = "uiautomator".equals(cmd[0])
+                    ? RootController.execAsShell(cmd)
+                    : RootController.exec(cmd);
+                if (rr.ok) return new ExecResult(true, rr.output);
+            }
             StringBuilder line = new StringBuilder();
             for (String c : cmd) {
                 if (line.length() > 0) line.append(' ');

@@ -27,6 +27,8 @@ import com.xs.chat.plugins.FileEditPlugin
 import com.xs.chat.plugins.MemoryPlugin
 import com.xs.chat.plugins.ImagePlugin
 import com.xs.chat.plugins.VideoPlugin
+import com.xs.chat.plugins.DeviceControlPlugin
+import com.wirelessdebug.service.RootController
 import java.io.File
 import android.util.Base64
 import java.util.Locale
@@ -69,7 +71,8 @@ data class ChatUiState(
     val memoryLog: List<String> = emptyList(),
     val memoryLimit: Int = 2000,
     val callRoles: List<CallRole> = emptyList(),
-    val callRoleId: String = ""
+    val callRoleId: String = "",
+    val rootControlEnabled: Boolean = true
 )
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -120,9 +123,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 videoResolution = settings.videoResolution,
                 videoDuration = settings.videoDuration,
                 apiProfiles = apiStore.getAll(),
-                memoryLimit = settings.memoryLimit
+                memoryLimit = settings.memoryLimit,
+                rootControlEnabled = settings.rootControlEnabled
             )
         }
+    }
+
+    /** 切换 Root 最高权限控制（已 root 设备默认开启）。 */
+    fun setRootControl(enabled: Boolean) {
+        settings.rootControlEnabled = enabled
+        RootController.enabled = enabled
+        _ui.update { it.copy(rootControlEnabled = enabled) }
     }
 
     // ---------- 通话角色 ----------
@@ -395,6 +406,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
+
+        // 设备控制意图优先接管：命中则直接操控手机（类 Codex 电脑版控制）
+        if (deviceControlIntent(content)) return
 
         // 媒体生成意图优先接管：命中则直接调生图/生视频插件，避免 AI 只回复提示词
         if (mediaGenIntent(content, pending)) return
@@ -776,20 +790,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val text = FileEditPlugin.edit(model, clean, target.name, content, onUsage = { u = it })
                     text to u
                 }
-                val path = withContext(Dispatchers.IO) {
-                    AttachmentStore.saveEditedFile(app, target.name, edited.first)
+                val (path, savedPath) = withContext(Dispatchers.IO) {
+                    // 私有副本（附件可点击查看）+ 公共下载目录导出（用户可直接取用）
+                    val local = AttachmentStore.saveEditedFile(app, target.name, edited.first)
+                    val pub = AttachmentStore.exportTextToDownloads(app, target.name, edited.first)
+                    local to (pub ?: "（导出下载目录失败，仅保存在应用私有目录）")
                 }
                 val attach = Attachment(
                     kind = AttachmentKind.FILE,
-                    name = "edited_" + target.name,
+                    name = target.name,
                     mimeType = "text/plain",
                     sizeBytes = File(path).length(),
                     uri = "file://" + path,
                     generated = true
                 )
+                val preview = previewEdited(target.name, edited.first)
                 completeAssistant(
                     assistantId,
-                    "✅ 文件已修改（${attach.name}，${attach.sizeBytes / 1024} KB）\n\n原文件：${target.name}\n修改要求：$clean\n点击下方附件可查看修改结果",
+                    "✅ 文件已修改（${attach.name}，${attach.sizeBytes / 1024} KB），已保留原文件格式（换行符/BOM/缩进）\n\n" +
+                        "修改要求：$clean\n保存位置：$savedPath\n\n" +
+                        "$preview\n\n点击下方附件可在应用内查看完整内容并再次保存",
                     listOf(attach),
                     CallMeta(
                         promptTokens = edited.second?.promptTokens ?: 0,
@@ -833,6 +853,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (m.progress == p) return@update st
             list[idx] = m.copy(progress = p)
             st.copy(messages = list)
+        }
+    }
+
+    /** 修改后内容的 Markdown 预览：按扩展名带语言标签，截断过长内容。 */
+    private fun previewEdited(fileName: String, content: String): String {
+        val max = 4000
+        val text = content.removePrefix("\uFEFF")
+        val truncated = text.length > max
+        val body = if (truncated) text.take(max) + "\n…（已截断，点击附件查看完整内容）" else text
+        return "```${langTagFor(fileName)}\n$body\n```"
+    }
+
+    /** 按文件扩展名返回 Markdown 代码块语言标签。 */
+    private fun langTagFor(fileName: String): String {
+        val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return when (ext) {
+            "kt", "kts" -> "kotlin"
+            "java" -> "java"
+            "py" -> "python"
+            "js", "mjs", "cjs" -> "javascript"
+            "ts" -> "typescript"
+            "html", "htm" -> "html"
+            "css" -> "css"
+            "json" -> "json"
+            "xml" -> "xml"
+            "yml", "yaml" -> "yaml"
+            "md", "markdown" -> "markdown"
+            "sql" -> "sql"
+            "sh", "bash" -> "bash"
+            "c" -> "c"
+            "cpp", "cc", "h" -> "cpp"
+            "go" -> "go"
+            "rs" -> "rust"
+            "swift" -> "swift"
+            "php" -> "php"
+            "rb" -> "ruby"
+            "gradle", "gradle.kts" -> "gradle"
+            "txt", "" -> "text"
+            else -> ext
         }
     }
 
@@ -912,6 +971,43 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 输入框消息自动识别设备控制意图：命中直接操控手机（类 Codex 电脑版控制）。 */
+    private fun deviceControlIntent(content: String): Boolean {
+        val lower = content.lowercase(Locale.ROOT)
+        val compact = lower.replace(" ", "")
+        val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
+            || lower.trimEnd().endsWith("?") || lower.trimEnd().endsWith("？") || lower.trimEnd().endsWith("吗")
+        if (question) return false
+        val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
+        val kwTrigger = DEVICE_CONTROL_KEYWORDS.any { compact.contains(it.replace(" ", "")) }
+        if (openTrigger || kwTrigger) {
+            _ui.update { it.copy(pendingAttachments = emptyList()) }
+            runDeviceControl(content)
+            return true
+        }
+        return false
+    }
+
+    fun runDeviceControl(instruction: String) {
+        if (_ui.value.isStreaming) return
+        val app = getApplication<android.app.Application>()
+        pluginJob = viewModelScope.launch {
+            val assistantId = beginPluginWork("【设备控制】$instruction", emptyList())
+            _ui.update { it.copy(isStreaming = true) }
+            try {
+                val result = DeviceControlPlugin.execute(app, instruction)
+                MemoryPlugin.log(app, "设备控制", instruction.take(40))
+                completeAssistant(assistantId, result, emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pluginError(assistantId, e.message?.takeIf { it.isNotBlank() } ?: e::class.java.simpleName)
+            } finally {
+                finishPluginWork()
+            }
+        }
+    }
+
     companion object {
         /** 输入框自动触发生图/生视频的意图关键词（疑问句式由 mediaGenIntent 排除）。 */
         private val IMAGE_INTENT_KEYWORDS = listOf(
@@ -925,6 +1021,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "生成一段视频", "生成个视频", "动起来", "生成动画", "动画视频", "动态视频",
             "generate video", "make a video", "create a video", "video generation",
             "text to video", "image to video", "t2v", "i2v"
+        )
+
+        /** 设备控制（类 Codex 电脑版）意图关键词。 */
+        private val DEVICE_CONTROL_KEYWORDS = listOf(
+            "控制手机", "操作手机", "操控手机", "控制设备", "帮我点", "点击屏幕", "点一下",
+            "打开应用", "读屏", "看看屏幕", "查看屏幕", "屏幕内容", "屏幕上有什么",
+            "帮我打开", "帮我输入", "输入文字", "上滑", "下滑", "左滑", "右滑", "滑动屏幕",
+            "返回桌面", "锁屏", "通知栏", "下拉通知", "back", "home", "read screen",
+            "tap", "click", "swipe", "control phone", "control device"
         )
 
         /** 文生图/图生图模型命名特征（覆盖 OpenAI/Flux/SD/即梦/混元/通义等）。 */
@@ -1070,16 +1175,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
-
-
-
-
-
-
-
-
-
-
 
 
 
