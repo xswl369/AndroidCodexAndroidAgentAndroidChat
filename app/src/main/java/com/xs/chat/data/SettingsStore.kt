@@ -60,6 +60,13 @@ class SettingsStore(context: Context) {
         get() = sp.getBoolean(KEY_ROOT_CONTROL_ENABLED, true)
         set(value) = sp.edit().putBoolean(KEY_ROOT_CONTROL_ENABLED, value).apply()
 
+    /** 内置插件开关（默认启用；新增插件注册到 PluginRegistry 后在此持久化）。 */
+    fun pluginEnabled(pluginId: String): Boolean = sp.getBoolean(KEY_PLUGIN_PREFIX + pluginId, true)
+
+    fun setPluginEnabled(pluginId: String, enabled: Boolean) {
+        sp.edit().putBoolean(KEY_PLUGIN_PREFIX + pluginId, enabled).apply()
+    }
+
     var mcpEnabled: Boolean
         get() = sp.getBoolean(KEY_MCP_ENABLED, false)
         set(value) = sp.edit().putBoolean(KEY_MCP_ENABLED, value).apply()
@@ -95,6 +102,7 @@ class SettingsStore(context: Context) {
         const val KEY_MEMORY_LIMIT = "memory_limit"
         const val KEY_SANDBOX_ENABLED = "sandbox_enabled"
         const val KEY_ROOT_CONTROL_ENABLED = "root_control_enabled"
+        const val KEY_PLUGIN_PREFIX = "plugin_"
         const val KEY_MCP_ENABLED = "mcp_enabled"
         const val KEY_MCP_PORT = "mcp_port"
         const val KEY_CALL_ROLE_ID = "call_role_id"

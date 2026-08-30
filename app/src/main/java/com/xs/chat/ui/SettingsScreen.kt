@@ -46,6 +46,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Contrast
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Image
@@ -113,7 +114,8 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     state: ChatUiState,
     vm: ChatViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenPlugins: () -> Unit = {}
 ) {
     var baseUrl by rememberSaveable(state.baseUrl) { mutableStateOf(state.baseUrl) }
     var apiKey by rememberSaveable(state.apiKey) { mutableStateOf(state.apiKey) }
@@ -243,6 +245,21 @@ fun SettingsScreen(
                     Text("x", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            // ---------- 内置插件入口 ----------
+            SectionTitle("内置插件")
+            Text(
+                "按需求开关内置插件（设备控制 / 联网搜索 / 文件修改 / 生图 / 生视频 / 记忆）。新增插件注册后自动出现在列表中。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenPlugins, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Extension, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("插件列表（" + state.plugins.size + " 个）")
+            }
+            Spacer(Modifier.height(8.dp))
+
             // ---------- 设备控制（类 Codex 电脑版） ----------
             SectionTitle("设备控制（类 Codex 电脑版）")
             Text(

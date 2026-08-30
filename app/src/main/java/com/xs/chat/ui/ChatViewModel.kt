@@ -28,6 +28,9 @@ import com.xs.chat.plugins.MemoryPlugin
 import com.xs.chat.plugins.ImagePlugin
 import com.xs.chat.plugins.VideoPlugin
 import com.xs.chat.plugins.DeviceControlPlugin
+import com.xs.chat.plugins.WebSearchPlugin
+import com.xs.chat.plugins.PluginRegistry
+import com.xs.chat.plugins.PluginRegistry.PluginInfo
 import com.wirelessdebug.service.RootController
 import java.io.File
 import android.util.Base64
@@ -72,7 +75,9 @@ data class ChatUiState(
     val memoryLimit: Int = 2000,
     val callRoles: List<CallRole> = emptyList(),
     val callRoleId: String = "",
-    val rootControlEnabled: Boolean = true
+    val rootControlEnabled: Boolean = true,
+    val plugins: List<PluginInfo> = PluginRegistry.plugins,
+    val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet()
 )
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -124,9 +129,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 videoDuration = settings.videoDuration,
                 apiProfiles = apiStore.getAll(),
                 memoryLimit = settings.memoryLimit,
-                rootControlEnabled = settings.rootControlEnabled
+                rootControlEnabled = settings.rootControlEnabled,
+                plugins = PluginRegistry.plugins,
+                enabledPlugins = PluginRegistry.plugins.map { it.id }.filter { settings.pluginEnabled(it) }.toSet()
             )
         }
+    }
+
+    /** 切换内置插件开关（设置 → 插件）。 */
+    fun togglePlugin(pluginId: String, enabled: Boolean) {
+        settings.setPluginEnabled(pluginId, enabled)
+        _ui.update {
+            it.copy(enabledPlugins = PluginRegistry.plugins.map { p -> p.id }.filter { settings.pluginEnabled(it) }.toSet())
+        }
+        MemoryPlugin.log(getApplication(), if (enabled) "启用插件" else "停用插件", pluginId)
     }
 
     /** 切换 Root 最高权限控制（已 root 设备默认开启）。 */
@@ -409,6 +425,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         // 设备控制意图优先接管：命中则直接操控手机（类 Codex 电脑版控制）
         if (deviceControlIntent(content)) return
+
+        // 联网搜索意图接管：命中则实时联网搜索
+        if (webSearchIntent(content)) return
 
         // 媒体生成意图优先接管：命中则直接调生图/生视频插件，避免 AI 只回复提示词
         if (mediaGenIntent(content, pending)) return
@@ -758,6 +777,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun runFileEdit(prompt: String, picked: List<PickedAttachment>? = null) {
         if (_ui.value.isStreaming) return
+        if (!_ui.value.enabledPlugins.contains("file_edit")) {
+            notice("文件修改插件已关闭（设置 → 插件可重新开启）")
+            return
+        }
         val model = _ui.value.activeModel ?: run {
             notice("请先选择模型")
             return
@@ -958,21 +981,62 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val images = pending.filter { it.kind == AttachmentKind.IMAGE }
         return when {
             !question && VIDEO_INTENT_KEYWORDS.any { compact.contains(it.replace(" ", "")) } -> {
-                _ui.update { it.copy(pendingAttachments = emptyList()) }
-                runVideoGen(content, refsOverride = images)
-                true
+                if (_ui.value.enabledPlugins.contains("video_gen")) {
+                    _ui.update { it.copy(pendingAttachments = emptyList()) }
+                    runVideoGen(content, refsOverride = images)
+                    true
+                } else false
             }
             !question && IMAGE_INTENT_KEYWORDS.any { compact.contains(it.replace(" ", "")) } -> {
-                _ui.update { it.copy(pendingAttachments = emptyList()) }
-                runImageGen(content, refsOverride = images)
-                true
+                if (_ui.value.enabledPlugins.contains("image_gen")) {
+                    _ui.update { it.copy(pendingAttachments = emptyList()) }
+                    runImageGen(content, refsOverride = images)
+                    true
+                } else false
             }
             else -> false
         }
     }
 
+    /** 输入框消息自动识别联网搜索意图：命中实时联网搜索（排除疑问句式）。 */
+    private fun webSearchIntent(content: String): Boolean {
+        if (!_ui.value.enabledPlugins.contains("web_search")) return false
+        val lower = content.lowercase(Locale.ROOT).trim().replace(Regex("^(请帮我|帮我|请|麻烦)"), "")
+        val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
+            || lower.endsWith("?") || lower.endsWith("？") || lower.endsWith("吗")
+        if (question) return false
+        val m = Regex("^(搜索|搜一下|搜|查一下|查找|查|联网搜|联网搜索|帮我搜|帮我查|web search|search)\\s+(.+)$").find(lower)
+        if (m != null) {
+            _ui.update { it.copy(pendingAttachments = emptyList()) }
+            runWebSearch(m.groupValues[2])
+            return true
+        }
+        return false
+    }
+
+    fun runWebSearch(query: String) {
+        if (_ui.value.isStreaming) return
+        val app = getApplication<android.app.Application>()
+        pluginJob = viewModelScope.launch {
+            val assistantId = beginPluginWork("【联网搜索】$query", emptyList())
+            _ui.update { it.copy(isStreaming = true) }
+            try {
+                val result = WebSearchPlugin.search(query)
+                MemoryPlugin.log(app, "联网搜索", query.take(40))
+                completeAssistant(assistantId, result, emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pluginError(assistantId, e.message?.takeIf { it.isNotBlank() } ?: e::class.java.simpleName)
+            } finally {
+                finishPluginWork()
+            }
+        }
+    }
+
     /** 输入框消息自动识别设备控制意图：命中直接操控手机（类 Codex 电脑版控制）。 */
     private fun deviceControlIntent(content: String): Boolean {
+        if (!_ui.value.enabledPlugins.contains("device_control")) return false
         val lower = content.lowercase(Locale.ROOT)
         val compact = lower.replace(" ", "")
         val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
@@ -1175,7 +1239,3 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
-
-
-
-

@@ -20,6 +20,7 @@ import com.xs.chat.ui.ChatUiState
 import com.xs.chat.ui.ChatViewModel
 import com.xs.chat.ui.LocalLanguage
 import com.xs.chat.ui.SettingsScreen
+import com.xs.chat.ui.PluginScreen
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -51,10 +52,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun AppRoot(state: ChatUiState, vm: ChatViewModel) {
     var screen by rememberSaveable { mutableStateOf("chat") }
-    if (screen == "settings") {
-        BackHandler { screen = "chat" }
-        SettingsScreen(state = state, vm = vm, onBack = { screen = "chat" })
-    } else {
-        ChatScreen(state = state, vm = vm, onOpenSettings = { screen = "settings" })
+    when (screen) {
+        "plugins" -> {
+            BackHandler { screen = "settings" }
+            PluginScreen(state = state, vm = vm, onBack = { screen = "settings" })
+        }
+        "settings" -> {
+            BackHandler { screen = "chat" }
+            SettingsScreen(
+                state = state,
+                vm = vm,
+                onBack = { screen = "chat" },
+                onOpenPlugins = { screen = "plugins" }
+            )
+        }
+        else -> ChatScreen(state = state, vm = vm, onOpenSettings = { screen = "settings" })
     }
 }

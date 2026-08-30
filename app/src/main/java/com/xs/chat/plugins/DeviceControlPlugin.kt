@@ -3,7 +3,6 @@ package com.xs.chat.plugins
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
 import com.wirelessdebug.service.AdbShellController
 import com.wirelessdebug.service.RootController
 import com.wirelessdebug.service.ShizukuController
@@ -113,31 +112,13 @@ object DeviceControlPlugin {
         }
     }
 
-    /** 打开应用：先查别名表，再按应用名（PackageManager 标签）解析，最后按包名直开。 */
+    /** 打开应用：先查别名表，再按启动时缓存的全量应用索引解析（支持「打开抖音搜索」这类带动作词指令），最后按包名直开。 */
     private fun openApp(context: Context, query: String): String {
         val q = query.trim()
         ALIASES[q]?.let { return ShizukuDevice.openApp(it) }
-        resolveByLabel(context, q)?.let { return ShizukuDevice.openApp(it) }
+        AppIndexPlugin.find(context, q)?.let { return ShizukuDevice.openApp(it) }
         if (Regex("^[a-z0-9_.]{3,}$").matches(q)) return ShizukuDevice.openApp(q)
         return "未找到应用：$q"
-    }
-
-    /** 遍历已安装启动器应用，按中文名/包名模糊匹配，选名称最短的命中项。 */
-    private fun resolveByLabel(context: Context, query: String): String? {
-        val lower = query.lowercase(Locale.ROOT)
-        val pm = context.packageManager
-        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val list = runCatching { pm.queryIntentActivities(intent, 0) }.getOrNull() ?: return null
-        return list.asSequence()
-            .mapNotNull { ri ->
-                val pkg = ri.activityInfo.packageName
-                val label = runCatching { ri.loadLabel(pm).toString() }.getOrNull() ?: return@mapNotNull null
-                if (label.lowercase(Locale.ROOT).contains(lower) || pkg.lowercase(Locale.ROOT).contains(lower)) {
-                    label to pkg
-                } else null
-            }
-            .minByOrNull { it.first.length }
-            ?.second
     }
 
     private val ALIASES = mapOf(

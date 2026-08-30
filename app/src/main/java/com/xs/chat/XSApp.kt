@@ -10,6 +10,7 @@ import com.wirelessdebug.WdbContext
 import com.wirelessdebug.service.RootController
 import com.xs.chat.data.SettingsStore
 import com.xs.chat.mcp.McpServer
+import com.xs.chat.plugins.AppIndexPlugin
 import com.xs.chat.sandbox.Sandbox
 import java.io.File
 import java.io.FileWriter
@@ -47,6 +48,10 @@ class XSApp : Application() {
         if (RootController.enabled) {
             Thread { RootController.isRooted() }.start()
         }
+        // 应用索引：启动自动枚举全部已安装应用（供「打开应用」即时解析）
+        Thread {
+            runCatching { AppIndexPlugin.refresh(applicationContext) }
+        }.start()
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread: Thread, throwable: Throwable ->
             val now = System.currentTimeMillis()
