@@ -14,7 +14,9 @@ object PluginRegistry {
     data class PluginInfo(
         val id: String,
         val name: String,
-        val desc: String
+        val desc: String,
+        /** AI 自动生成的触发指令与使用说明（添加插件后由模型完善）。 */
+        val usage: String = ""
     )
 
     /** 全部内置插件（按需扩展：新增插件只需在此列表追加一项）。 */
@@ -41,7 +43,7 @@ object PluginRegistry {
                 val id = o.optString("id").trim()
                 val name = o.optString("name").trim()
                 if (id.isEmpty() || name.isEmpty()) null
-                else PluginInfo(id, name, o.optString("desc").trim())
+                else PluginInfo(id, name, o.optString("desc").trim(), o.optString("usage").trim())
             }
         }.getOrDefault(emptyList())
     }
@@ -70,9 +72,21 @@ object PluginRegistry {
         return true
     }
 
+    /** 更新用户插件的 AI 完善内容（触发指令 / 使用说明）。 */
+    fun updatePluginUsage(settings: SettingsStore, id: String, usage: String): Boolean {
+        val list = userPlugins(settings).toMutableList()
+        val idx = list.indexOfFirst { it.id == id }
+        if (idx < 0) return false
+        list[idx] = list[idx].copy(usage = usage.trim())
+        save(settings, list)
+        return true
+    }
+
     private fun save(settings: SettingsStore, list: List<PluginInfo>) {
         val arr = JSONArray()
-        list.forEach { arr.put(JSONObject().put("id", it.id).put("name", it.name).put("desc", it.desc)) }
+        list.forEach {
+            arr.put(JSONObject().put("id", it.id).put("name", it.name).put("desc", it.desc).put("usage", it.usage))
+        }
         settings.setUserPluginsJson(arr.toString())
     }
 

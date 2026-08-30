@@ -1,6 +1,7 @@
 package com.xs.chat.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xs.chat.data.AiModel
@@ -77,7 +78,9 @@ data class ChatUiState(
     val callRoleId: String = "",
     val rootControlEnabled: Boolean = true,
     val plugins: List<PluginInfo> = PluginRegistry.plugins,
-    val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet()
+    val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet(),
+    /** 正在被 AI 完善定义的插件 id（添加插件后异步生成触发指令/使用说明）。 */
+    val generatingPluginId: String? = null
 )
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
@@ -149,8 +152,45 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (ok) {
             refreshPlugins()
             MemoryPlugin.log(getApplication(), "添加插件", id)
+            aiPolishPlugin(id, name, desc)
         }
         return ok
+    }
+
+    /** 添加插件后自动调用当前模型完善插件定义（触发指令 / 使用说明），AI 失败不影响插件本身。 */
+    private fun aiPolishPlugin(id: String, name: String, desc: String) {
+        val model = _ui.value.activeModel ?: return
+        val app = getApplication<android.app.Application>()
+        _ui.update { it.copy(generatingPluginId = id) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val api = OpenAiApi(model.baseUrl, model.apiKey)
+                val system = "你是手机 App「XS Chat」的插件定义生成器。用户登记了一个新插件，请生成该插件的使用说明，要求：\n" +
+                    "① 2-3 条中文触发指令示例，每行一条，格式如「查一下 广州天气」\n" +
+                    "② 一句话说明插件功能\n直接输出文本，不要代码块，不要加标题符号。"
+                val user = "插件名称：$name\n插件 ID：$id\n用户描述：${desc.ifBlank { "无" }}"
+                // 优先非流式；部分网关对 stream=false 路由异常（HTTP 503 无通道）时回退流式聚合（聊天同款路径）
+                var result = runCatching {
+                    api.completeChat(model.modelId, system, listOf("user" to user), 0.6f)
+                }.getOrNull()?.trim()
+                if (result.isNullOrBlank()) {
+                    result = runCatching {
+                        val sb = StringBuilder()
+                        val msgs = listOf(ChatMessage(role = Role.USER, content = user))
+                        api.streamChat(model.modelId, msgs, system, 0.6f, onDelta = { sb.append(it) })
+                        sb.toString()
+                    }.onFailure { Log.w(TAG, "aiPolish streamChat failed id=$id", it) }.getOrNull()?.trim()
+                }
+                if (!result.isNullOrBlank()) {
+                    PluginRegistry.updatePluginUsage(settings, id, result)
+                    MemoryPlugin.log(app, "AI 完善插件", id)
+                }
+            } catch (_: Exception) {
+            } finally {
+                _ui.update { it.copy(generatingPluginId = null) }
+                refreshPlugins()
+            }
+        }
     }
 
     /** 删除用户插件（内置插件不可删）。 */
@@ -1098,6 +1138,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        private const val TAG = "ChatViewModel"
+
         /** 输入框自动触发生图/生视频的意图关键词（疑问句式由 mediaGenIntent 排除）。 */
         private val IMAGE_INTENT_KEYWORDS = listOf(
             "生成图片", "生成图像", "生成一张", "生成图", "画一张", "画个", "画一幅", "帮我画",
