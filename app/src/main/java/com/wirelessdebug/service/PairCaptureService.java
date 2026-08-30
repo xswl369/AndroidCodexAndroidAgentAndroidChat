@@ -82,6 +82,15 @@ public class PairCaptureService extends Service {
                 }
             }
         }
+        // 预热 OCR（提取 traineddata + 初始化 Tesseract），使首帧屏幕能即时识别配对码
+        Thread th = new Thread(new Runnable() {
+            @Override public void run() {
+                try { ScreenOcr.prepare(); } catch (Throwable t) { Log.w(TAG, "ocr prewarm: " + t.getMessage()); }
+            }
+        }, "ocr-prewarm");
+        th.setDaemon(true);
+        th.start();
+
         return START_NOT_STICKY;
     }
 

@@ -282,11 +282,19 @@ fun SettingsScreen(
                             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             context.startActivity(i)
                         }.onFailure {
-                            // 部分 ROM（ColorOS 等）不支持直达无线调试页，回退开发者选项页
+                            // 部分 ROM（ColorOS 等）不支持 WIRELESS_DEBUGGING_SETTINGS：
+                            // 用 :settings:fragment extra 直达「无线调试」子页，最后才回退开发者选项页
                             runCatching {
                                 val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                                i.putExtra(":settings:fragment", "com.android.settings.development.WirelessDebuggingFragment")
                                 i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 context.startActivity(i)
+                            }.onFailure {
+                                runCatching {
+                                    val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    context.startActivity(i)
+                                }
                             }
                         }
                         captureLauncher.launch(mpm.createScreenCaptureIntent())
@@ -1103,52 +1111,50 @@ private fun MediaParamRow(
 /** 一键自动配对：发现配对端口 + 截屏 OCR 识别 6 位配对码 + 自动配对，90 秒超时。 */
 private suspend fun autoPairLoop(context: Context, onStatus: (String) -> Unit): String {
     WdbContext.init(context)
-    val deadline = System.currentTimeMillis() + 90_000
-    var lastError = ""
-    var lastScanMs = 0L
-    var pairError = ""
-    val tryCount = mutableMapOf<String, Int>()
-    while (System.currentTimeMillis() < deadline) {
-        val result = withContext(Dispatchers.IO) {
-            val bmp = MediaProjectionCapture.capture()
-            val ocrText = if (bmp != null) ScreenOcr.recognize(bmp) else null
-            var port = AdbShellController.findPairPort(context)
-            // OCR 直读配对页上的端口（IP:端口），比 mDNS 更快更可靠
-            if (port <= 0) port = extractPairPort(ocrText) ?: -1
-            // mDNS 不可靠的 ROM（ColorOS 等）定期重扫本机监听端口兜底
-            if (port <= 0 && System.currentTimeMillis() - lastScanMs > 6000) {
-                port = AdbShellController.scanPairPort()
-                lastScanMs = System.currentTimeMillis()
+    // 必须离开 Compose 帧时钟调度器：App 后台时帧停止会冻结轮询，改在时间基准的 Default 调度器运行
+    return withContext(Dispatchers.Default) {
+        val deadline = System.currentTimeMillis() + 90_000
+        var lastError = ""
+        var pairError = ""
+        val tryCount = mutableMapOf<String, Int>()
+        while (System.currentTimeMillis() < deadline) {
+            val result = withContext(Dispatchers.IO) {
+                val bmp = MediaProjectionCapture.capture()
+                val ocrText = if (bmp != null) ScreenOcr.recognize(bmp) else null
+                // 配对弹窗可见时，IP:端口与 6 位码都从 OCR 文本直读，不依赖缓慢且不可靠的 mDNS/扫描
+                val port = extractPairPort(ocrText) ?: -1
+                val code = extractPairCode(ocrText)
+                android.util.Log.d("AutoPair", "port=$port code=$code ocr=${ocrText?.take(120)}")
+                Triple(port, code, bmp != null)
             }
-            val code = extractPairCode(ocrText)
-            android.util.Log.d("AutoPair", "port=$port code=$code ocr=${ocrText?.take(120)}")
-            Triple(port, code, bmp != null)
+            val (port, code, captureOk) = result
+            // 仅在端口与码均由 OCR 从配对弹窗直接读出时才尝试配对，避免拿错误码去探对任意端口
+            if (port > 0 && code != null && (tryCount[code] ?: 0) < 2) {
+                tryCount[code] = (tryCount[code] ?: 0) + 1
+                val r = withContext(Dispatchers.IO) { AdbPairClient.pair("127.0.0.1", port, code) }
+                android.util.Log.d("AutoPair", "pair($port,$code) ok=${r.ok} msg=${r.message}")
+                if (r.ok) {
+                    PairState.markPaired(context)
+                    stopPairCapture(context)
+                    // shell 通道后台建立，不阻塞「配对成功」即时反馈
+                    Thread({ runCatching { AdbShellController.ensureConnected() } }, "adb-ensure-conn").start()
+                    return@withContext "配对成功！端口 $port，ADB 通道已建立"
+                }
+                pairError = "配对尝试失败：" + r.message
+                onStatus(pairError)
+            } else {
+                lastError = when {
+                    port <= 0 -> "未找到配对端口，请停留在「使用配对码配对设备」页面"
+                    !captureOk -> "正在等待录屏授权生效…"
+                    else -> if (code != null) "正在校验 $code…" else "正在识别配对码…"
+                }
+                onStatus(lastError)
+            }
+            delay(if (code != null || port > 0) 400 else if (!captureOk) 400 else 500)
         }
-        val (port, code, captureOk) = result
-        if (port > 0 && code != null && (tryCount[code] ?: 0) < 2) {
-            tryCount[code] = (tryCount[code] ?: 0) + 1
-            val r = withContext(Dispatchers.IO) { AdbPairClient.pair("127.0.0.1", port, code) }
-            android.util.Log.d("AutoPair", "pair($port,$code) ok=${r.ok} msg=${r.message}")
-            if (r.ok) {
-                PairState.markPaired(context)
-                AdbShellController.ensureConnected()
-                stopPairCapture(context)
-                return "配对成功（端口 $port），ADB shell 通道已建立"
-            }
-            pairError = "配对尝试失败：" + r.message
-            onStatus(pairError)
-        } else {
-            lastError = when {
-                port <= 0 -> "未发现配对端口：请停留在「使用配对码配对设备」页面"
-                !captureOk -> "正在等待录屏授权生效…"
-                else -> if (code != null) "配对中（码 $code）…" else "正在识别配对码…"
-            }
-            onStatus(lastError)
-        }
-        delay(1500)
+        stopPairCapture(context)
+        return@withContext "配对超时：" + (pairError.ifBlank { lastError }).ifBlank { "请确认无线调试已开启并停留在配对页面" }
     }
-    stopPairCapture(context)
-    return "配对超时：" + (pairError.ifBlank { lastError }).ifBlank { "请确认无线调试已开启并停留在配对页面" }
 }
 
 /** 配对码 OCR 增强：字母误识别映射回数字（O→0/I→1 等），逐行优先匹配独立 6 位数字。 */

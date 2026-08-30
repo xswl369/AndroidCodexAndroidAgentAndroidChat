@@ -16,8 +16,8 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 62
-        versionName = "1.2.41"
+        versionCode = 63
+        versionName = "1.2.42"
     }
 
     buildTypes {
@@ -73,6 +73,7 @@ dependencies {
     implementation(files("libs/shizuku-shared-12.2.0.aar"))
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
 
 
 
