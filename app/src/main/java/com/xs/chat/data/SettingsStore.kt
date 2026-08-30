@@ -51,6 +51,18 @@ class SettingsStore(context: Context) {
         get() = sp.getInt(KEY_MEMORY_LIMIT, 2000)
         set(value) = sp.edit().putInt(KEY_MEMORY_LIMIT, value.coerceIn(10, 50000)).apply()
 
+    var sandboxEnabled: Boolean
+        get() = sp.getBoolean(KEY_SANDBOX_ENABLED, true)
+        set(value) = sp.edit().putBoolean(KEY_SANDBOX_ENABLED, value).apply()
+
+    var mcpEnabled: Boolean
+        get() = sp.getBoolean(KEY_MCP_ENABLED, false)
+        set(value) = sp.edit().putBoolean(KEY_MCP_ENABLED, value).apply()
+
+    var mcpPort: Int
+        get() = sp.getInt(KEY_MCP_PORT, 8765)
+        set(value) = sp.edit().putInt(KEY_MCP_PORT, value.coerceIn(1024, 65535)).apply()
+
     var callRoleId: String
         get() = sp.getString(KEY_CALL_ROLE_ID, "").orEmpty()
         set(value) = sp.edit().putString(KEY_CALL_ROLE_ID, value).apply()
@@ -76,6 +88,9 @@ class SettingsStore(context: Context) {
         const val KEY_VIDEO_RESOLUTION = "video_resolution"
         const val KEY_VIDEO_DURATION = "video_duration"
         const val KEY_MEMORY_LIMIT = "memory_limit"
+        const val KEY_SANDBOX_ENABLED = "sandbox_enabled"
+        const val KEY_MCP_ENABLED = "mcp_enabled"
+        const val KEY_MCP_PORT = "mcp_port"
         const val KEY_CALL_ROLE_ID = "call_role_id"
         const val KEY_DIALECT_KEY = "dialect_key"
         const val KEY_DIALECT_URL = "dialect_url"

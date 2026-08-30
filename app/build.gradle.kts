@@ -4,6 +4,10 @@
     alias(libs.plugins.kotlin.compose)
 }
 
+repositories {
+    maven("https://jitpack.io")
+}
+
 android {
     namespace = "com.xs.chat"
     compileSdk = 37
@@ -12,8 +16,8 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 53
-        versionName = "1.2.32"
+        versionCode = 54
+        versionName = "1.2.33"
     }
 
     buildTypes {
@@ -57,8 +61,19 @@ dependencies {
     implementation(libs.androidx.camera.view)
     implementation("com.alphacephei:vosk-android:0.3.75@aar")
     implementation("net.java.dev.jna:jna:5.18.1@aar")
+    // 无线调试（ADB over Wi-Fi）内置组件
+    implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("org.conscrypt:conscrypt-android:2.5.2")
+    implementation("com.github.adaptech-cz:Tesseract4Android:4.8.0") {
+        exclude(group = "com.github.adaptech-cz.Tesseract4Android", module = "tesseract4android-openmp")
+    }
+    implementation(files("libs/shizuku-api-12.2.0.aar"))
+    implementation(files("libs/shizuku-provider-12.2.0.aar"))
+    implementation(files("libs/shizuku-aidl-12.2.0.aar"))
+    implementation(files("libs/shizuku-shared-12.2.0.aar"))
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
 
 
 

@@ -6,6 +6,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import com.offlinevoice.input.VoskEngine
+import com.wirelessdebug.WdbContext
+import com.xs.chat.data.SettingsStore
+import com.xs.chat.mcp.McpServer
+import com.xs.chat.sandbox.Sandbox
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -24,6 +28,15 @@ class XSApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 无线调试组件上下文初始化
+        WdbContext.init(this)
+        // 沙盒状态与 MCP 服务按设置启动
+        val settings = SettingsStore(this)
+        Sandbox.enabled = settings.sandboxEnabled
+        McpServer.appContext = this
+        if (settings.mcpEnabled) {
+            Thread { McpServer.start(settings.mcpPort) }.start()
+        }
         // 预热离线语音模型（后台解压）：通话接通时零延时
         Thread {
             runCatching { VoskEngine.ensureModel(applicationContext, "vosk-model-small-cn", {}, {}) }

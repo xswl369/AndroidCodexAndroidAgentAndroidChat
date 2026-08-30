@@ -1,6 +1,15 @@
 package com.xs.chat.ui
 
 import com.xs.chat.BuildConfig
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.material3.TextButton
+import com.wirelessdebug.PairState
+import com.wirelessdebug.WdbContext
+import com.wirelessdebug.service.AdbPairClient
+import com.wirelessdebug.service.AdbShellController
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,16 +70,18 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -83,6 +94,8 @@ import androidx.compose.ui.unit.dp
 import com.xs.chat.data.AiModel
 import com.xs.chat.data.CallRole
 import com.xs.chat.data.SettingsStore
+import com.xs.chat.mcp.McpServer
+import com.xs.chat.sandbox.Sandbox
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -220,6 +233,230 @@ fun SettingsScreen(
                     Text("x", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            // ---------- 无线调试（ADB over Wi-Fi，内置配对组件） ----------
+            SectionTitle("无线调试")
+            Text(
+                "免电脑无线调试：内置 SPAKE2 配对协议 + ADB shell 控制通道，配对后可直接在本机执行 shell 命令。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var wdbTesting by remember { mutableStateOf(false) }
+            var wdbStatus by remember { mutableStateOf("") }
+            var pairDialog by remember { mutableStateOf(false) }
+            var pairCode by remember { mutableStateOf("") }
+            val wdbScope = rememberCoroutineScope()
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = {
+                    runCatching {
+                        val i = Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)
+                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(i)
+                    }
+                }) { Text("打开无线调试设置") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { pairDialog = true }, enabled = !wdbTesting) { Text("开始配对") }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = {
+                    wdbTesting = true
+                    wdbScope.launch {
+                        wdbStatus = withContext(Dispatchers.IO) {
+                            WdbContext.init(context)
+                            val ok = AdbShellController.ensureConnected()
+                            if (ok) "已连接（ADB shell 通道就绪）" else "未连接：请先开启无线调试并配对"
+                        }
+                        wdbTesting = false
+                    }
+                }, enabled = !wdbTesting) { Text("检测连接") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(onClick = {
+                    wdbTesting = true
+                    wdbScope.launch {
+                        wdbStatus = withContext(Dispatchers.IO) {
+                            WdbContext.init(context)
+                            val ok = AdbShellController.ensureConnected()
+                            if (!ok) "未连接：请先开启无线调试并配对"
+                            else {
+                                val r = AdbShellController.exec("getprop ro.product.model; getprop ro.build.version.release")
+                                if (r.ok) "命令成功：" + r.output.trim() else "命令失败：" + r.output.trim()
+                            }
+                        }
+                        wdbTesting = false
+                    }
+                }, enabled = !wdbTesting) { Text("测试命令") }
+            }
+            if (wdbStatus.isNotBlank()) {
+                Text(
+                    wdbStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            if (pairDialog) {
+                AlertDialog(
+                    onDismissRequest = { pairDialog = false },
+                    title = { Text("无线调试配对") },
+                    text = {
+                        Column {
+                            Text(
+                                "请先在「设置 → 开发者选项 → 无线调试 → 使用配对码配对设备」页面开启，然后输入页面上显示的 6 位配对码：",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = pairCode,
+                                onValueChange = { pairCode = it.filter { c -> c.isDigit() }.take(6) },
+                                label = { Text("配对码") },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (pairCode.length == 6) {
+                                    pairDialog = false
+                                    wdbTesting = true
+                                    wdbScope.launch {
+                                        wdbStatus = withContext(Dispatchers.IO) {
+                                            WdbContext.init(context)
+                                            var port = AdbShellController.findPairPort(context)
+                                            if (port <= 0) port = AdbShellController.scanPairPort()
+                                            if (port <= 0) "未发现配对端口：请停留在「使用配对码配对设备」页面再试"
+                                            else {
+                                                val r = AdbPairClient.pair("127.0.0.1", port, pairCode)
+                                                if (r.ok) {
+                                                    PairState.markPaired(context)
+                                                    AdbShellController.ensureConnected()
+                                                    "配对成功（端口 $port），ADB shell 通道已建立"
+                                                } else "配对失败：" + r.message
+                                            }
+                                        }
+                                        wdbTesting = false
+                                    }
+                                }
+                            }
+                        ) { Text("配对") }
+                    },
+                    dismissButton = { TextButton(onClick = { pairDialog = false }) { Text("取消") } }
+                )
+            }
+            // ---------- 沙盒（与 Codex 一致：隔离危险命令与越权写路径） ----------
+            SectionTitle("沙盒")
+            Text(
+                "与 Codex 沙盒同理念：开启后拦截破坏性 shell 命令（删除/格式化/重启/提权/写系统分区），写路径仅限应用私有目录与用户文件；外部 MCP 调用强制走沙盒。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            val settingsStore = remember { SettingsStore(context) }
+            var sandboxOn by rememberSaveable(settingsStore.sandboxEnabled) { mutableStateOf(settingsStore.sandboxEnabled) }
+            var sandboxLog by remember { mutableStateOf(Sandbox.log.value) }
+            LaunchedEffect(sandboxOn) {
+                settingsStore.sandboxEnabled = sandboxOn
+                Sandbox.enabled = sandboxOn
+            }
+            LaunchedEffect(Unit) {
+                Sandbox.log.collect { sandboxLog = it }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = sandboxOn, onCheckedChange = { sandboxOn = it })
+                Spacer(Modifier.width(8.dp))
+                Text(if (sandboxOn) "沙盒已开启" else "沙盒已关闭", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { Sandbox.clearLog() }) { Text("清空日志") }
+            }
+            if (sandboxLog.isNotEmpty()) {
+                sandboxLog.takeLast(5).forEach { entry ->
+                    Text(
+                        entry,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+
+            // ---------- MCP 服务（外部连接） ----------
+            SectionTitle("MCP 服务")
+            Text(
+                "内置 MCP server（Streamable HTTP）：PC 上执行 adb forward tcp:8765 tcp:8765 后，外部客户端（如 Codex）可连接 http://127.0.0.1:8765/message，调用设备信息 / shell 执行等工具。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var mcpOn by rememberSaveable(settingsStore.mcpEnabled) { mutableStateOf(settingsStore.mcpEnabled) }
+            var mcpPortText by rememberSaveable(settingsStore.mcpPort) { mutableStateOf(settingsStore.mcpPort.toString()) }
+            var mcpStatus by remember { mutableStateOf(McpServer.state.value) }
+            val mcpScope = rememberCoroutineScope()
+            LaunchedEffect(mcpOn) {
+                settingsStore.mcpEnabled = mcpOn
+                if (mcpOn) {
+                    withContext(Dispatchers.IO) { McpServer.start(settingsStore.mcpPort) }
+                } else {
+                    McpServer.stop()
+                }
+            }
+            LaunchedEffect(Unit) {
+                McpServer.state.collect { mcpStatus = it }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Switch(checked = mcpOn, onCheckedChange = { mcpOn = it })
+                Spacer(Modifier.width(8.dp))
+                Text(if (mcpOn) "MCP 服务运行中" else "MCP 服务已关闭", style = MaterialTheme.typography.bodyMedium)
+            }
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "端口",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(64.dp)
+                )
+                TextField(
+                    value = mcpPortText,
+                    onValueChange = { input ->
+                        val clean = input.filter { it.isDigit() }.take(5)
+                        mcpPortText = clean
+                        clean.toIntOrNull()?.let { v ->
+                            settingsStore.mcpPort = v
+                            if (mcpOn) {
+                                mcpScope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        McpServer.stop()
+                                        McpServer.start(v)
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    textStyle = MaterialTheme.typography.bodyMedium,
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = MaterialTheme.colorScheme.primary,
+                        unfocusedIndicatorColor = MaterialTheme.colorScheme.outlineVariant,
+                        errorIndicatorColor = MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier.width(110.dp)
+                )
+            }
+            if (mcpStatus.isNotBlank()) {
+                Text(
+                    mcpStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+
             SectionTitle(Lang.t(lang, "api_settings"))
             // 已保存的 API 合并进 API 设置：下拉选择 + 保存当前
             Row(verticalAlignment = Alignment.CenterVertically) {

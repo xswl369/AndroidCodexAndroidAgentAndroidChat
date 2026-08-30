@@ -12,4 +12,10 @@
     <string name="regenerate">重新生成</string>
     <string name="delete">删除</string>
     <string name="edit">编辑</string>
+    <string name="pair_capture_channel">配对识别</string>
+    <string name="pair_capture_notif_text">屏幕录制仅用于自动识别无线调试配对码</string>
+    <string name="pair_capture_notif_title">正在识别配对码</string>
+    <string name="fgs_channel_name">后台运行</string>
+    <string name="fgs_notification_text">无线调试通道运行中，请勿强制停止</string>
+    <string name="fgs_notification_title">无线调试助手运行中</string>
 </resources>
