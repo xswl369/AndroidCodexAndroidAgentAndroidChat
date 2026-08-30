@@ -67,6 +67,13 @@ class SettingsStore(context: Context) {
         sp.edit().putBoolean(KEY_PLUGIN_PREFIX + pluginId, enabled).apply()
     }
 
+    /** 用户自建插件列表（JSON 数组 [{id,name,desc}]，插件管理页添加/删除）。 */
+    fun userPluginsJson(): String = sp.getString(KEY_USER_PLUGINS, "").orEmpty()
+
+    fun setUserPluginsJson(json: String) {
+        sp.edit().putString(KEY_USER_PLUGINS, json).apply()
+    }
+
     var mcpEnabled: Boolean
         get() = sp.getBoolean(KEY_MCP_ENABLED, false)
         set(value) = sp.edit().putBoolean(KEY_MCP_ENABLED, value).apply()
@@ -103,6 +110,7 @@ class SettingsStore(context: Context) {
         const val KEY_SANDBOX_ENABLED = "sandbox_enabled"
         const val KEY_ROOT_CONTROL_ENABLED = "root_control_enabled"
         const val KEY_PLUGIN_PREFIX = "plugin_"
+        const val KEY_USER_PLUGINS = "user_plugins"
         const val KEY_MCP_ENABLED = "mcp_enabled"
         const val KEY_MCP_PORT = "mcp_port"
         const val KEY_CALL_ROLE_ID = "call_role_id"

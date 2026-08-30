@@ -130,8 +130,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 apiProfiles = apiStore.getAll(),
                 memoryLimit = settings.memoryLimit,
                 rootControlEnabled = settings.rootControlEnabled,
-                plugins = PluginRegistry.plugins,
-                enabledPlugins = PluginRegistry.plugins.map { it.id }.filter { settings.pluginEnabled(it) }.toSet()
+                plugins = PluginRegistry.all(settings),
+                enabledPlugins = PluginRegistry.all(settings).map { it.id }.filter { settings.pluginEnabled(it) }.toSet()
             )
         }
     }
@@ -139,10 +139,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     /** 切换内置插件开关（设置 → 插件）。 */
     fun togglePlugin(pluginId: String, enabled: Boolean) {
         settings.setPluginEnabled(pluginId, enabled)
-        _ui.update {
-            it.copy(enabledPlugins = PluginRegistry.plugins.map { p -> p.id }.filter { settings.pluginEnabled(it) }.toSet())
-        }
+        refreshPlugins()
         MemoryPlugin.log(getApplication(), if (enabled) "启用插件" else "停用插件", pluginId)
+    }
+
+    /** 添加用户插件（设置 → 插件 → 添加）。返回是否添加成功（id 冲突/非法为 false）。 */
+    fun addPlugin(id: String, name: String, desc: String): Boolean {
+        val ok = PluginRegistry.addUserPlugin(settings, id, name, desc)
+        if (ok) {
+            refreshPlugins()
+            MemoryPlugin.log(getApplication(), "添加插件", id)
+        }
+        return ok
+    }
+
+    /** 删除用户插件（内置插件不可删）。 */
+    fun removePlugin(pluginId: String) {
+        if (PluginRegistry.removeUserPlugin(settings, pluginId)) {
+            refreshPlugins()
+            MemoryPlugin.log(getApplication(), "删除插件", pluginId)
+        }
+    }
+
+    private fun refreshPlugins() {
+        _ui.update {
+            it.copy(
+                plugins = PluginRegistry.all(settings),
+                enabledPlugins = PluginRegistry.all(settings).map { p -> p.id }.filter { settings.pluginEnabled(it) }.toSet()
+            )
+        }
     }
 
     /** 切换 Root 最高权限控制（已 root 设备默认开启）。 */
