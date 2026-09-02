@@ -19,6 +19,10 @@ android {
         versionCode = 80
         versionName = "1.2.59"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // 16KB page-size: 64-bit only (upstream 32-bit ABI libs are 4KB-aligned)
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     buildTypes {
