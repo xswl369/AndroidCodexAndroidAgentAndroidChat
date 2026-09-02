@@ -44,14 +44,27 @@ class XSApp : Application() {
         if (RootController.enabled) {
             Thread { RootController.isRooted() }.start()
         }
-        // 冷启动保护：所有预热任务推迟到首帧渲染完成 20s 后，避免启动瞬间抢 CPU/网络导致界面卡顿
-        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            // 内置 Python 运行时（免 Root 双通道，无外部 Termux）后台预热
-            Thread { runCatching { com.xs.chat.plugins.TermuxManager.autoPrepare(applicationContext) } }.start()
-            // 应用索引：离线枚举已安装应用（供「打开应用」即时识别）
-            Thread { runCatching { AppIndexPlugin.refresh(applicationContext) } }.start()
-            // 离线语音模型预热（通话接通时零延时）
+        // 冷启动保护：CPU/网络重的预热推迟到首帧之后，避免启动瞬间抢资源导致界面卡顿
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        // 内置 Python 运行时（免装 Termux）：启动 2.5s 后单后台线程自动就绪，无需点击任何按钮；
+        // root/无线通道尚未就绪时每 8s 重试一次，最多 8 次（全程后台，不阻塞 UI）
+        mainHandler.postDelayed({
+            Thread {
+                var attempt = 0
+                while (attempt < 8) {
+                    val r = runCatching { com.xs.chat.plugins.TermuxManager.autoPrepare(applicationContext) }.getOrNull()
+                    if (r == "ready" || r == "skip") break
+                    attempt++
+                    if (attempt < 8) try { Thread.sleep(8_000) } catch (_: InterruptedException) { break }
+                }
+            }.start()
+        }, 2_500L)
+        // 离线语音模型预热（通话接通时零延时；迟到 20s 后台执行，不给首帧添压力）
+        mainHandler.postDelayed({
             Thread { runCatching { VoskEngine.ensureModel(applicationContext, "vosk-model-small-cn", {}, {}) } }.start()
+        }, 20_000L)
+        mainHandler.postDelayed({
+            Thread { runCatching { AppIndexPlugin.refresh(applicationContext) } }.start()
         }, 20_000L)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread: Thread, throwable: Throwable ->
@@ -94,5 +107,7 @@ class XSApp : Application() {
         }
     }
 }
+
+
 
 

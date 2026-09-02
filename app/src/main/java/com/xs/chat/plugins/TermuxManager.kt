@@ -94,9 +94,11 @@ object TermuxManager {
         return dst
     }
 
+    /** 仅读取文件头 2 字节做 gzip 魔数校验，避免全量读入（12MB）判断缓存是否损坏。 */
     private fun isGzip(f: File): Boolean = runCatching {
-        val head = f.readBytes().take(2)
-        head.size == 2 && head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte()
+        java.io.RandomAccessFile(f, "r").use { raf ->
+            raf.length() >= 2 && raf.readUnsignedByte() == 0x1f && raf.readUnsignedByte() == 0x8b
+        }
     }.getOrDefault(false)
 
     private fun runtimeAssetBytes(ctx: Context): ByteArray =
@@ -191,11 +193,13 @@ object TermuxManager {
         else -> "部署未完成：" + msg
     }
 
-    /** App 启动后台预热：仅走缓存通道，未就绪且无通道时静默跳过，等用户进设置页一键启动。 */
+    /**
+     * App 启动后台自动就绪：仅走缓存通道、不触发 mDNS；未部署即刻部署，部署失败由调用方按重试节奏再试。
+     * 以真实「是否可执行」为准（pythonReady），不依赖一次性标记，运行时被清空后下一次启动自动重新部署。
+     */
     fun autoPrepare(ctx: Context): String {
         Log.i(TAG, "autoPrepare called")
         if (pythonReady()) { prefs(ctx).edit().putBoolean(AUTO_DONE, true).apply(); return "ready" }
-        if (prefs(ctx).getBoolean(AUTO_DONE, false)) { Log.i(TAG, "auto skip done-once"); return "skip" }
         if (channelFast() == 0) { Log.i(TAG, "auto no-channel"); return "no-channel" }
         val (deployed, msg) = deploy(ctx)
         if (deployed && selfCheck()) {
@@ -217,3 +221,5 @@ object TermuxManager {
         return if (ok) "已清除，可重新部署" else "清除失败：" + out
     }
 }
+
+
