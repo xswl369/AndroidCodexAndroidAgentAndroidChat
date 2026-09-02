@@ -71,6 +71,7 @@ object PluginRegistry {
             "py" -> "py"
             "js" -> "js"
             "lua" -> "lua"
+            "sql" -> "sql"
             else -> null
         }
     }
@@ -80,6 +81,7 @@ object PluginRegistry {
         "py" -> "Python"
         "js" -> "JavaScript"
         "lua" -> "Lua"
+        "sql" -> "SQL"
         else -> ""
     }
 

@@ -45,7 +45,7 @@ object ScriptRunner {
     private const val MAX_TEXT = 200_000
 
     /**
-     * 代码块围栏语言 -> 可运行语言键（py / js / sh / lua）；不支持的语言返回 null。
+     * 代码块围栏语言 -> 可运行语言键（py / js / sh / lua / sql）；不支持返回 null。
      * 供聊天代码块「一键运行」按语言路由到对应内置运行时。
      */
     fun langFromFence(label: String?): String? {
@@ -55,6 +55,7 @@ object ScriptRunner {
             key in setOf("js", "javascript", "node", "nodejs", "es6") -> "js"
             key in setOf("sh", "bash", "shell", "zsh", "ash", "mksh", "console") -> "sh"
             key in setOf("lua") -> "lua"
+            key in setOf("sql", "sqlite", "sqlite3", "mysql", "postgresql", "postgres", "psql") -> "sql"
             else -> null
         }
     }
@@ -84,6 +85,7 @@ object ScriptRunner {
                 "js" -> runJs(dir, script, args)
                 "lua" -> runLua(dir, script, args)
                 "py" -> runPython(context, dir, plugin, script, args, onProgress)
+                "sql" -> runSql(script)
                 else -> RunResult(false, "", "暂不支持的脚本语言 " + lang)
             }
         } catch (e: CancellationException) {
@@ -160,6 +162,8 @@ object ScriptRunner {
         try {
             cx = RhinoContext.enter()
             cx.languageVersion = RhinoContext.VERSION_ES6
+            // Android 上禁用字节码优化（解释执行），避免 ClassDefDino 类文件加载失败
+            cx.optimizationLevel = -1
             val scope = cx.initStandardObjects()
             val io = ScriptIo(dir, log, args)
             scope.put("__xs", scope, RhinoContext.javaToJS(io, scope))
@@ -197,6 +201,91 @@ object ScriptRunner {
         } catch (e: Exception) {
             RunResult(false, trimText(log), e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    /** SQL：走 Android 内置 SQLite，内存库执行多语句，SELECT/PRAGMA 以表格形式输出。 */
+    private fun runSql(script: File): RunResult = bounded(LANG_TIMEOUT_MS) { runSqlInner(script) }
+
+    private fun runSqlInner(script: File): RunResult {
+        val log = StringBuilder()
+        var db: android.database.sqlite.SQLiteDatabase? = null
+        val result: RunResult = try {
+            val flags = android.database.sqlite.SQLiteDatabase.OPEN_READWRITE or
+                android.database.sqlite.SQLiteDatabase.NO_LOCALIZED_COLLATORS
+            db = android.database.sqlite.SQLiteDatabase.openDatabase(":memory:", null, flags)
+            for (stmt in splitSqlStatements(script.readText(StandardCharsets.UTF_8))) {
+                val sql = stmt.trim()
+                if (sql.isEmpty()) continue
+                if (sql.length > 100_000) {
+                    appendLog(log, "单条 SQL 过长（>100KB），已中止")
+                    break
+                }
+                val upper = sql.uppercase(Locale.ROOT)
+                val isQuery = upper.startsWith("SELECT") || upper.startsWith("PRAGMA") || upper.startsWith("EXPLAIN")
+                if (isQuery) {
+                    val cur = db.rawQuery(sql, null)
+                    try {
+                        if (cur.columnCount > 0) {
+                            appendLog(log, (0 until cur.columnCount).joinToString(" | ") { cur.getColumnName(it) })
+                            var rows = 0
+                            while (cur.moveToNext() && rows < 500) {
+                                appendLog(log, (0 until cur.columnCount).joinToString(" | ") { i ->
+                                    when (cur.getType(i)) {
+                                        android.database.Cursor.FIELD_TYPE_NULL -> "NULL"
+                                        android.database.Cursor.FIELD_TYPE_INTEGER -> cur.getLong(i).toString()
+                                        android.database.Cursor.FIELD_TYPE_FLOAT -> cur.getDouble(i).toString()
+                                        android.database.Cursor.FIELD_TYPE_BLOB -> "blob(" + cur.getBlob(i).size + "B)"
+                                        else -> cur.getString(i)?.let { s -> if (s.length > 160) s.take(160) + "…" else s } ?: "NULL"
+                                    }
+                                })
+                                rows++
+                            }
+                            val total = cur.count
+                            if (total > 500) appendLog(log, "……（已截断至 500 行，共 $total 行）")
+                        } else {
+                            appendLog(log, "OK")
+                        }
+                    } finally {
+                        runCatching { cur.close() }
+                    }
+                } else {
+                    db.execSQL(sql)
+                    appendLog(log, "OK")
+                }
+            }
+            RunResult(true, trimText(log))
+        } catch (e: Exception) {
+            RunResult(false, trimText(log), e.message ?: e.javaClass.simpleName)
+        } finally {
+            runCatching { db?.close() }
+        }
+        return result
+    }
+
+    /** 简易 SQL 语句拆分：按分号切分，忽略引号内/行注释中的分号。 */
+    private fun splitSqlStatements(raw: String): List<String> {
+        val out = mutableListOf<String>()
+        val buf = StringBuilder()
+        var quote = false
+        var comment = false
+        var i = 0
+        while (i < raw.length) {
+            val c = raw[i]
+            when {
+                comment -> if (c == '\n') comment = false
+                quote -> {
+                    buf.append(c)
+                    if (c == '\'' && (i == 0 || raw[i - 1] != '\\')) quote = false
+                }
+                c == '\'' -> { quote = true; buf.append(c) }
+                c == ';' -> { out += buf.toString().trim(); buf.clear() }
+                c == '-' && i + 1 < raw.length && raw[i + 1] == '-' -> comment = true
+                else -> buf.append(c)
+            }
+            i++
+        }
+        if (buf.isNotBlank()) out += buf.toString()
+        return out
     }
 
     /** 独立守护线程执行；超时后放弃等待（进程不被阻塞，脚本线程后台自行结束）。 */

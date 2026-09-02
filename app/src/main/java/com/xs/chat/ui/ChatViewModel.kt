@@ -1184,7 +1184,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         val lang = ScriptRunner.langFromFence(fenceLang)
         if (lang == null) {
-            notice("暂不支持运行「" + fenceLang.trim().ifBlank { "未知" } + "」；本机内置：Python / JavaScript / Shell / Lua")
+            notice("暂不支持运行「" + fenceLang.trim().ifBlank { "未知" } + "」；本机内置：Python / JavaScript / Shell / Lua / SQL")
             return
         }
         if (code.isBlank()) {
@@ -1198,7 +1198,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val app = getApplication<Application>()
         val id = "inline_" + UUID.randomUUID().toString().take(8)
         val scriptName = "main." + when (lang) {
-            "py" -> "py"; "js" -> "js"; "sh" -> "sh"; else -> "lua"
+            "py" -> "py"; "js" -> "js"; "sh" -> "sh"; "sql" -> "sql"; else -> "lua"
         }
         val plugin = PluginInfo(
             id = id,

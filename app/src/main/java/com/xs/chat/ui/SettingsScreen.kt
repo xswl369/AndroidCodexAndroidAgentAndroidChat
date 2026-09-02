@@ -262,7 +262,7 @@ fun SettingsScreen(
             // ---------- 内置 Termux（Python 运行时） ----------
             SectionTitle("内置 Python 运行时（无需安装 Termux）")
             Text(
-                "Python 3.14 运行时已完整嵌入 App 内部（约 12MB，Shizuku 式全内置）：首次点「一键就绪」自动部署并自检，Root / 免 Root 无线调试通道均可直用。聊天里运行 .py 脚本即时生效，不安装、不注册任何外部应用。",
+        "Python 3.14 运行时已完整嵌入 App 内部（约 12MB）：启动后自动解压到 App 私有目录并直接执行（应用内直跑），无需 Root / 无线调试 / 安装 Termux。聊天里代码块点 ▶ 即可运行 .py / .js / .sh / .lua / .sql，结果直接显示在对话。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

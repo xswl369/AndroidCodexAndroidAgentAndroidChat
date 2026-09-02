@@ -16,8 +16,9 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 79
-        versionName = "1.2.58"
+        versionCode = 80
+        versionName = "1.2.59"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -79,6 +80,8 @@ dependencies {
     implementation(files("libs/shizuku-aidl-12.2.0.aar"))
     implementation(files("libs/shizuku-shared-12.2.0.aar"))
     debugImplementation(libs.androidx.compose.ui.tooling)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
 
 
