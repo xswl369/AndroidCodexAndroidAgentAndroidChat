@@ -67,7 +67,7 @@ object ScriptRunner {
                 "sh" -> execRun(listOf("/system/bin/sh", script.absolutePath, args), dir, DEFAULT_TIMEOUT_MS)
                 "js" -> runJs(dir, script, args)
                 "lua" -> runLua(dir, script, args)
-                "py" -> runPython(dir, plugin, script, args, onProgress)
+                "py" -> runPython(context, dir, plugin, script, args, onProgress)
                 else -> RunResult(false, "", "暂不支持的脚本语言 " + lang)
             }
         } catch (e: CancellationException) {
@@ -199,19 +199,41 @@ object ScriptRunner {
         return ref.get() ?: RunResult(false, "", "脚本执行超时（" + timeoutMs / 1000 + "s），已放弃等待")
     }
 
-    // ---------- Python：设备运行时 + pip 依赖自动安装 ----------
+    // ---------- Python：优先本地运行时可执行，否则走内置 Termux 链路 ----------
 
-    private fun runPython(dir: File, plugin: PluginInfo, script: File, args: String, onProgress: ((String) -> Unit)?): RunResult {
-        val py = PY_CANDIDATES.map { File(it) }.firstOrNull { it.canExecute() }
-            ?: return RunResult(false, "", PY_NOT_FOUND)
-        val env = mutableMapOf("PYTHONDONTWRITEBYTECODE" to "1", "PYTHONUNBUFFERED" to "1")
+    private suspend fun runPython(context: Context, dir: File, plugin: PluginInfo, script: File, args: String, onProgress: ((String) -> Unit)?): RunResult {
+        val localPy = PY_CANDIDATES.map { File(it) }.firstOrNull { it.canExecute() }
+        if (localPy != null) {
+            val env = mutableMapOf("PYTHONDONTWRITEBYTECODE" to "1", "PYTHONUNBUFFERED" to "1")
+            val deps = plugin.deps.trim()
+            if (deps.isNotEmpty()) {
+                onProgress?.invoke("正在自动安装依赖：" + deps.take(60) + "…")
+                ensurePipDeps(localPy, dir, deps)
+                env["PYTHONPATH"] = File(dir, ".pydeps").absolutePath
+            }
+            return execRun(listOf(localPy.absolutePath, "-3", script.absolutePath, args), dir, DEFAULT_TIMEOUT_MS, env)
+        }
+
+        // ---- 内置 Termux 链路（自动安装/初始化，Root 通道直接执行）----
+        onProgress?.invoke("正在就绪内置 Termux 运行时…")
+        val (ready, msg) = runCatching { TermuxManager.ensureReady(context) }
+            .getOrElse { false to ("Termux 初始化异常：" + (it.message ?: it.javaClass.simpleName)) }
+        if (!ready) {
+            // 安装/初始化进行中：给 Termux 内安装 Python 留出时间
+            onProgress?.invoke(msg)
+            var waited = 0L
+            while (waited < 150_000L && !TermuxManager.pythonReady()) {
+                Thread.sleep(2000)
+                waited += 2000L
+            }
+            if (!TermuxManager.pythonReady()) return RunResult(false, "", msg)
+        }
         val deps = plugin.deps.trim()
         if (deps.isNotEmpty()) {
-            onProgress?.invoke("正在自动安装依赖：" + deps.take(60) + "…")
-            ensurePipDeps(py, dir, deps)
-            env["PYTHONPATH"] = File(dir, ".pydeps").absolutePath
+            return RunResult(false, "", "内置 Termux 链路暂不支持自动 pip 依赖（请改在 Termux 内安装：" + deps.take(80) + "）")
         }
-        return execRun(listOf(py.absolutePath, "-3", script.absolutePath, args), dir, DEFAULT_TIMEOUT_MS, env)
+        val (ok, out) = TermuxManager.runPython(script.absolutePath, args, dir.absolutePath)
+        return if (ok) RunResult(true, out) else RunResult(false, out, "")
     }
 
     /** pip 安装依赖到插件目录 .pydeps（失败抛出具体原因）。 */
@@ -265,3 +287,6 @@ object ScriptRunner {
     private const val PY_NOT_FOUND =
         "未检测到本机 Python 3 运行时。推荐安装 Termux（F-Droid）后执行：pkg install python。否则请改用 .sh / .js / .lua 脚本（无需额外运行时）。"
 }
+
+
+

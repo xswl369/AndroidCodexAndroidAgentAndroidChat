@@ -103,6 +103,7 @@ import com.xs.chat.sandbox.Sandbox
 import com.wirelessdebug.service.AccessibilityDevice
 import com.wirelessdebug.service.RootController
 import com.wirelessdebug.service.ShizukuController
+import com.xs.chat.plugins.TermuxManager
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
@@ -258,6 +259,61 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(8.dp))
 
+            // ---------- 内置 Termux（Python 运行时） ----------
+            SectionTitle("内置 Python 运行时（无需安装 Termux）")
+            Text(
+                "Python 3.14 运行时已完整嵌入 App 内部（约 12MB，Shizuku 式全内置）：首次点「一键就绪」自动部署并自检，Root / 免 Root 无线调试通道均可直用。聊天里运行 .py 脚本即时生效，不安装、不注册任何外部应用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            var termuxStatus by remember { mutableStateOf(TermuxManager.state(context).detail) }
+            var termuxBusy by remember { mutableStateOf(false) }
+            val termuxScope = rememberCoroutineScope()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                termuxStatus,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            Row {
+                Button(
+                    onClick = {
+                        termuxBusy = true
+                        termuxScope.launch {
+                            termuxStatus = "正在部署内置 Python 运行时…"
+                            val (ready, msg) = TermuxManager.ensureReady(context)
+                            termuxStatus = if (ready) "✅ " + msg else msg
+                            termuxBusy = false
+                        }
+                    },
+                    enabled = !termuxBusy,
+                    modifier = Modifier.weight(1f)
+                ) { Text("一键就绪") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        termuxBusy = true
+                        termuxScope.launch {
+                            termuxStatus = TermuxManager.resetRuntime(context)
+                            val (ready, msg) = TermuxManager.ensureReady(context)
+                            termuxStatus = (if (ready) "✅ " else "") + msg
+                            termuxBusy = false
+                        }
+                    },
+                    enabled = !termuxBusy,
+                    modifier = Modifier.weight(1f)
+                ) { Text("重新部署") }
+            }
+            Spacer(Modifier.height(4.dp))
+            OutlinedButton(
+                onClick = {
+                    termuxStatus = TermuxManager.state(context).detail
+                },
+                enabled = !termuxBusy,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("刷新状态") }
+            Spacer(Modifier.height(12.dp))
             // ---------- 设备控制（类 Codex 电脑版） ----------
             SectionTitle("设备控制（类 Codex 电脑版）")
             Text(
@@ -1207,3 +1263,4 @@ private fun MediaParamRow(
         }
     }
 }
+

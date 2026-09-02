@@ -20,6 +20,7 @@ import com.xs.chat.ui.ChatUiState
 import com.xs.chat.ui.ChatViewModel
 import com.xs.chat.ui.LocalLanguage
 import com.xs.chat.ui.SettingsScreen
+
 import com.xs.chat.ui.PluginScreen
 import java.util.Locale
 
@@ -27,6 +28,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        
         setContent {
             val vm: ChatViewModel = viewModel()
             val state by vm.ui.collectAsState()
@@ -69,3 +71,6 @@ private fun AppRoot(state: ChatUiState, vm: ChatViewModel) {
         else -> ChatScreen(state = state, vm = vm, onOpenSettings = { screen = "settings" })
     }
 }
+
+
+

@@ -25,7 +25,7 @@ public class RootController {
     public static boolean isRooted() {
         long now = System.currentTimeMillis();
         if (rooted != null && now - checkAtMs < 15000) return rooted;
-        boolean ok = runSu(new String[] { "-c", "id" }) != null;
+        boolean ok = exec("id").ok;
         rooted = ok;
         checkAtMs = now;
         return ok;
@@ -50,14 +50,15 @@ public class RootController {
     /**
      * 以指定 uid 通过 su 执行命令（Magisk 支持 su <uid> -c）。
      * uiautomator 等读屏命令在 SELinux 下必须以 shell(2000) 身份运行，root 会被拒绝。
+     * 注意：调用方不要传入含单引号的命令（内部以 su <uid> -c 'cmd' 整条执行）。
      */
     public static Result execAs(int uid, String... cmd) {
         if (cmd == null || cmd.length == 0) return new Result(false, "empty command");
         String joined = String.join(" ", cmd);
-        // Magisk 语法：su <uid> -c "<cmd>"
-        String out = runSu(new String[] { String.valueOf(uid), "-c", joined });
-        if (out == null) return new Result(false, "su unavailable");
-        return new Result(true, out.trim());
+        ExecOut r = runSu(new String[] { String.valueOf(uid), "-c", joined });
+        if (r == null) return new Result(false, "su unavailable");
+        // 探测类命令（test/prob）以退出码为准, stdout 可能被 magisk 吞掉
+        return new Result(r.exit == 0, r.output.trim());
     }
 
     /** 以 shell(2000) 身份通过 su 执行（用于需要 shell 域的命令）。 */
@@ -65,22 +66,36 @@ public class RootController {
         return execAs(2000, cmd);
     }
 
-    /** 通过 su 执行单条命令，返回输出；任何异常/超时返回 null。 */
-    private static String runSu(String[] suArgs) {
+    /** 通过 su 执行单条命令，返回退出码与输出；任何异常/超时返回 null。 */
+    private static synchronized ExecOut runSu(String[] suArgs) {
         try {
-            String[] full = new String[suArgs.length + 1];
-            full[0] = "su";
-            System.arraycopy(suArgs, 0, full, 1, suArgs.length);
-            Process p = new ProcessBuilder(full)
+            String uid = suArgs.length > 0 ? suArgs[0] : "0";
+            String cmdLine = suArgs.length > 2 ? suArgs[2] : String.join(" ", suArgs);
+            String line = "/system/bin/su " + uid + " -c '" + cmdLine + "'";
+            Log.i(TAG, "su call: " + line);
+            Process p = new ProcessBuilder("/system/bin/sh", "-c", line)
                     .redirectErrorStream(true)
                     .start();
-            String out = readAll(p.getInputStream());
-            if (!p.waitFor(20, TimeUnit.SECONDS)) {
-                p.destroy();
+            // 不用 Process.waitFor(超时): 个别 ROM 上子进程退出后 waitFor 仍可永久沉睡；
+            // 改为有界轮询 exitValue()，超时强制销毁。
+            long deadline = System.currentTimeMillis() + 20000;
+            int exit = -1;
+            while (System.currentTimeMillis() < deadline) {
+                try {
+                    exit = p.exitValue();
+                    break;
+                } catch (IllegalThreadStateException alive) {
+                    try { Thread.sleep(200); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); break; }
+                }
+            }
+            if (exit < 0) {
+                p.destroyForcibly();
                 Log.w(TAG, "su timeout: " + String.join(" ", suArgs));
                 return null;
             }
-            return out;
+            String out = readAll(p.getInputStream());
+            Log.i(TAG, "su ok exit=" + exit + " out=[" + (out == null ? "" : out.trim()) + "]");
+            return new ExecOut(exit, out == null ? "" : out);
         } catch (Throwable t) {
             Log.d(TAG, "su failed: " + t.getMessage());
             return null;
@@ -96,5 +111,11 @@ public class RootController {
             br.close();
             return sb.toString();
         } catch (Exception e) { return null; }
+    }
+
+    private static final class ExecOut {
+        final int exit;
+        final String output;
+        ExecOut(int exit, String output) { this.exit = exit; this.output = output; }
     }
 }

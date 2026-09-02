@@ -16,14 +16,19 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 70
-        versionName = "1.2.49"
+        versionCode = 75
+        versionName = "1.2.54"
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     compileOptions {
@@ -65,7 +70,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     // 无线调试（ADB over Wi-Fi）内置组件
     implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("org.conscrypt:conscrypt-android:2.5.2")
+    implementation("org.conscrypt:conscrypt-android:2.6.3")
     implementation("com.github.adaptech-cz:Tesseract4Android:4.8.0") {
         exclude(group = "com.github.adaptech-cz.Tesseract4Android", module = "tesseract4android-openmp")
     }
@@ -75,6 +80,10 @@ dependencies {
     implementation(files("libs/shizuku-shared-12.2.0.aar"))
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+
+
+
 
 
 

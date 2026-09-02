@@ -40,18 +40,19 @@ class XSApp : Application() {
         if (settings.mcpEnabled) {
             Thread { McpServer.start(settings.mcpPort) }.start()
         }
-        // 预热离线语音模型（后台解压）：通话接通时零延时
-        Thread {
-            runCatching { VoskEngine.ensureModel(applicationContext, "vosk-model-small-cn", {}, {}) }
-        }.start()
         // 预热 root 检测：后台探测 su 可用性，避免首次设备控制卡顿
         if (RootController.enabled) {
             Thread { RootController.isRooted() }.start()
         }
-        // 应用索引：启动自动枚举全部已安装应用（供「打开应用」即时解析）
-        Thread {
-            runCatching { AppIndexPlugin.refresh(applicationContext) }
-        }.start()
+        // 冷启动保护：所有预热任务推迟到首帧渲染完成 20s 后，避免启动瞬间抢 CPU/网络导致界面卡顿
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            // 内置 Python 运行时（免 Root 双通道，无外部 Termux）后台预热
+            Thread { runCatching { com.xs.chat.plugins.TermuxManager.autoPrepare(applicationContext) } }.start()
+            // 应用索引：离线枚举已安装应用（供「打开应用」即时识别）
+            Thread { runCatching { AppIndexPlugin.refresh(applicationContext) } }.start()
+            // 离线语音模型预热（通话接通时零延时）
+            Thread { runCatching { VoskEngine.ensureModel(applicationContext, "vosk-model-small-cn", {}, {}) } }.start()
+        }, 20_000L)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread: Thread, throwable: Throwable ->
             val now = System.currentTimeMillis()
@@ -93,3 +94,5 @@ class XSApp : Application() {
         }
     }
 }
+
+
