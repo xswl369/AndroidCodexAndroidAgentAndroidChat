@@ -378,7 +378,8 @@ fun ChatScreen(
                                     },
                                     onTranslate = { vm.translateMessage(index) },
                                     onShare = { shareText(message.content) },
-                                    onDelete = { vm.deleteMessage(index) }
+                                    onDelete = { vm.deleteMessage(index) },
+                                    onRunCode = { lang, code -> vm.runCodeBlock(lang, code) }
                                 )
                                 Role.SYSTEM -> {}
                             }

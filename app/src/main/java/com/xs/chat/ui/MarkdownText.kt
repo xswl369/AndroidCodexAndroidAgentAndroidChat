@@ -15,6 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +39,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xs.chat.plugins.ScriptRunner
 
 // ---------- 语法树 ----------
 
@@ -290,7 +292,8 @@ fun MarkdownText(
     markdown: String,
     modifier: Modifier = Modifier,
     textStyle: TextStyle = MaterialTheme.typography.bodyMedium,
-    onCopyCode: (String) -> Unit = {}
+    onCopyCode: (String) -> Unit = {},
+    onRunCode: ((lang: String, code: String) -> Unit)? = null
 ) {
     // 解析失败时降级为纯文本，避免异常内容导致崩溃
     val blocks = remember(markdown) {
@@ -332,7 +335,7 @@ fun MarkdownText(
                 ) {
                     InlineText(block.spans, textStyle, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                 }
-                is Block.CodeBlock -> CodeBlockView(block, codeBg, onCopyCode)
+                is Block.CodeBlock -> CodeBlockView(block, codeBg, onCopyCode, onRunCode)
                 is Block.Table -> TableView(block, primary)
                 Block.Rule -> HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
@@ -392,8 +395,11 @@ private fun InlineText(
 private fun CodeBlockView(
     block: Block.CodeBlock,
     codeBg: Color,
-    onCopyCode: (String) -> Unit
+    onCopyCode: (String) -> Unit,
+    onRunCode: ((lang: String, code: String) -> Unit)?
 ) {
+    val runLang = ScriptRunner.langFromFence(block.lang)
+    val primary = MaterialTheme.colorScheme.primary
     Surface(
         color = codeBg,
         shape = RoundedCornerShape(10.dp),
@@ -410,6 +416,16 @@ private fun CodeBlockView(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
+                if (runLang != null && onRunCode != null) {
+                    IconButton(onClick = { onRunCode(block.lang, block.code) }) {
+                        Icon(
+                            Icons.Rounded.PlayArrow,
+                            contentDescription = "运行代码",
+                            tint = primary,
+                            modifier = Modifier.width(18.dp)
+                        )
+                    }
+                }
                 IconButton(onClick = { onCopyCode(block.code) }) {
                     Icon(
                         Icons.Rounded.ContentCopy,

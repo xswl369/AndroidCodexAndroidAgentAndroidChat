@@ -23,6 +23,7 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.Locale
 
 /**
  * 脚本插件运行器：按语言路由到本地运行时。
@@ -42,6 +43,21 @@ object ScriptRunner {
     private const val MAX_OUTPUT_BYTES = 512 * 1024
     private const val MAX_READ_BYTES = 10 * 1024 * 1024
     private const val MAX_TEXT = 200_000
+
+    /**
+     * 代码块围栏语言 -> 可运行语言键（py / js / sh / lua）；不支持的语言返回 null。
+     * 供聊天代码块「一键运行」按语言路由到对应内置运行时。
+     */
+    fun langFromFence(label: String?): String? {
+        val key = label?.trim()?.lowercase(Locale.ROOT)?.removePrefix("`")?.trim() ?: return null
+        return when {
+            key in setOf("py", "python", "python3", "python3.x") -> "py"
+            key in setOf("js", "javascript", "node", "nodejs", "es6") -> "js"
+            key in setOf("sh", "bash", "shell", "zsh", "ash", "mksh", "console") -> "sh"
+            key in setOf("lua") -> "lua"
+            else -> null
+        }
+    }
 
     private val PY_CANDIDATES = listOf(
         "/data/data/com.termux/files/usr/bin/python3",
@@ -221,6 +237,8 @@ object ScriptRunner {
         if (!ready) {
             // 安装/初始化进行中：给 Termux 内安装 Python 留出时间
             onProgress?.invoke(msg)
+            // 通道缺失（无 Root/无线调试）时立即返回明确错误，不空等
+            if (TermuxManager.channelFast() == 0) return RunResult(false, "", msg)
             var waited = 0L
             while (waited < 150_000L && !TermuxManager.pythonReady()) {
                 Thread.sleep(2000)
@@ -232,7 +250,7 @@ object ScriptRunner {
         if (deps.isNotEmpty()) {
             return RunResult(false, "", "内置 Termux 链路暂不支持自动 pip 依赖（请改在 Termux 内安装：" + deps.take(80) + "）")
         }
-        val (ok, out) = TermuxManager.runPython(script.absolutePath, args, dir.absolutePath)
+        val (ok, out) = TermuxManager.runPython(context, script.absolutePath, args, dir.absolutePath)
         return if (ok) RunResult(true, out) else RunResult(false, out, "")
     }
 

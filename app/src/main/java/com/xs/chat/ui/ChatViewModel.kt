@@ -1169,17 +1169,80 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 执行脚本插件：聊天内插入「【插件名】内容」，运行输出（stdout/stderr）回填为 assistant 回复。 */
     fun runScriptPlugin(plugin: PluginInfo, raw: String, args: String) {
+        launchPluginRun(plugin, "【" + plugin.name + "】" + raw, args, file = plugin.scriptFile ?: plugin.name)
+    }
+
+    /**
+     * 聊天内联脚本实时测试：代码块「一键运行」入口。
+     * 将代码落盘为临时脚本，复用 [ScriptRunner] 按语言路由（Python 走内置运行时），
+     * 运行输出回填为 assistant 回复；结束后清理临时目录。
+     */
+    fun runCodeBlock(fenceLang: String, code: String) {
+        if (_ui.value.isStreaming) {
+            notice("请等待当前回复完成后再次运行代码")
+            return
+        }
+        val lang = ScriptRunner.langFromFence(fenceLang)
+        if (lang == null) {
+            notice("暂不支持运行「" + fenceLang.trim().ifBlank { "未知" } + "」；本机内置：Python / JavaScript / Shell / Lua")
+            return
+        }
+        if (code.isBlank()) {
+            notice("代码内容为空，无法运行")
+            return
+        }
+        if (code.length > 200_000) {
+            notice("代码过长（超过 200KB），请拆分后运行")
+            return
+        }
+        val app = getApplication<Application>()
+        val id = "inline_" + UUID.randomUUID().toString().take(8)
+        val scriptName = "main." + when (lang) {
+            "py" -> "py"; "js" -> "js"; "sh" -> "sh"; else -> "lua"
+        }
+        val plugin = PluginInfo(
+            id = id,
+            name = "代码运行",
+            desc = "聊天内联脚本（一键实时测试）",
+            scriptFile = scriptName,
+            lang = lang
+        )
+        val target = ScriptStore.scriptFile(app, plugin)
+        try {
+            target?.writeText(code.trim() + "\n")
+        } catch (e: Exception) {
+            notice("写入脚本失败：" + (e.message ?: e.javaClass.simpleName))
+            return
+        }
+        MemoryPlugin.log(app, "运行内联脚本", PluginRegistry.langLabel(lang) + " " + code.length + " 字符")
+        launchPluginRun(
+            plugin = plugin,
+            label = "【运行 " + PluginRegistry.langLabel(lang) + " 脚本】",
+            args = "",
+            file = scriptName,
+            cleanupDir = true
+        )
+    }
+
+    /** 通用脚本执行：插入用户消息 + assistant 占位，输出回填，结束后落库并可选清理临时目录。 */
+    private fun launchPluginRun(
+        plugin: PluginInfo,
+        label: String,
+        args: String,
+        file: String,
+        cleanupDir: Boolean = false
+    ) {
         if (_ui.value.isStreaming) return
         val app = getApplication<Application>()
         pluginJob = viewModelScope.launch {
-            val assistantId = beginPluginWork("【" + plugin.name + "】" + raw, emptyList())
+            val assistantId = beginPluginWork(label, emptyList())
             _ui.update { it.copy(isStreaming = true) }
-            updateAssistantProgress(assistantId, "▶ 运行脚本：" + plugin.scriptFile)
+            updateAssistantProgress(assistantId, "▶ 运行脚本：" + file)
             try {
                 val result = ScriptRunner.run(app, plugin, args) { step ->
                     updateAssistantProgress(assistantId, step)
                 }
-                MemoryPlugin.log(app, "脚本插件", plugin.name + " " + args.take(30))
+                if (!cleanupDir) MemoryPlugin.log(app, "脚本插件", plugin.name + " " + args.take(30))
                 val output = result.output
                 val text = if (result.ok) {
                     output.ifBlank { "（脚本执行成功，无输出）" }
@@ -1193,6 +1256,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 pluginError(assistantId, e.message?.takeIf { it.isNotBlank() } ?: e::class.java.simpleName)
             } finally {
+                if (cleanupDir) ScriptStore.deleteDir(app, plugin.id)
                 finishPluginWork()
             }
         }

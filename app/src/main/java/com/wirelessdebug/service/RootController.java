@@ -36,6 +36,13 @@ public class RootController {
         return enabled && isRooted();
     }
 
+    /** 仅读缓存的 root 探测结果（不触发 su），供主线程/状态页快速展示。 */
+    public static boolean rootCached() {
+        if (!enabled) return false;
+        if (rooted == null) return false;
+        return System.currentTimeMillis() - checkAtMs < 15000 && rooted;
+    }
+
     public static class Result {
         public final boolean ok;
         public final String output;
