@@ -9,6 +9,8 @@ iconsExtended = "1.7.8"
 gson = "2.14.0"
 cameraX = "1.4.1"
 okhttp = "4.12.0"
+rhino = "1.7.15"
+luaj = "3.0.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -27,6 +29,8 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+rhino = { group = "org.mozilla", name = "rhino", version.ref = "rhino" }
+luaj = { group = "org.luaj", name = "luaj-jse", version.ref = "luaj" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -13,7 +13,10 @@ import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
 import android.util.Base64
 import java.net.URLEncoder
 import java.util.Locale
@@ -414,8 +417,7 @@ object MediaGenerator {
 
     private fun postJson(model: AiModel, endpoint: String, body: String, timeoutMs: Long): String {
         val url = model.baseUrl.trimEnd('/') + "/" + endpoint.trimStart('/')
-        val c = open(url, model.apiKey, timeoutMs)
-        return try {
+        return withConn(url, model.apiKey, timeoutMs) { c ->
             c.doOutput = true
             c.setRequestProperty("Content-Type", "application/json")
             c.outputStream.use {
@@ -425,45 +427,30 @@ object MediaGenerator {
             val code = c.responseCode
             if (code !in 200..299) throw ApiException(readError(c), code)
             c.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        } finally {
-            c.disconnect()
         }
     }
 
-    private fun query(url: String, apiKey: String): Int {
-        val c = open(url, apiKey, 30_000L)
-        return try {
+    private fun query(url: String, apiKey: String): Int =
+        withConn(url, apiKey, 30_000L) { c ->
             c.requestMethod = "GET"
             c.responseCode
-        } finally {
-            c.disconnect()
         }
-    }
 
-    private fun readBody(url: String, apiKey: String, code: Int): String {
-        val c = open(url, apiKey, 30_000L)
-        return try {
+    private fun readBody(url: String, apiKey: String, code: Int): String =
+        withConn(url, apiKey, 30_000L) { c ->
             if (code in 200..299) c.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
             else c.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
-        } finally {
-            c.disconnect()
         }
-    }
 
-    /** 下载媒体文件，失败自动重试（半成品文件先清理）。 */
+    /** 下载媒体文件，失败自动重试（半成品文件先清理）。DNS 解析失败由 withConn 自动走 DoH 兜底。 */
     private fun downloadTo(url: String, target: File, retries: Int = 0) {
         var last: Exception? = null
         repeat(retries + 1) {
             try {
-                val c = URL(url).openConnection() as HttpURLConnection
-                c.connectTimeout = CONNECT_TIMEOUT
-                c.readTimeout = 180_000
-                try {
+                withConn(url, "", 180_000L) { c ->
                     val code = c.responseCode
                     if (code !in 200..299) throw ApiException("下载失败 HTTP $code")
                     c.inputStream.use { input -> FileOutputStream(target).use { out -> input.copyTo(out) } }
-                } finally {
-                    c.disconnect()
                 }
                 return
             } catch (e: Exception) {
@@ -474,13 +461,92 @@ object MediaGenerator {
         throw last ?: ApiException("下载失败")
     }
 
-    private fun open(url: String, apiKey: String, timeoutMs: Long): HttpURLConnection {
+    /**
+     * 统一网络入口：系统 DNS 解析失败（UnknownHostException，如
+     * 「Unable to resolve host platform-outputs.agnes-ai.space」）时，用 DoH
+     * （阿里/DNSPod/Cloudflare/Google 多源）解析出 IP 后按 IP 直连重试，
+     * 同时保留原 Host 头与 TLS 证书校验（按原域名验证），规避系统 DNS 解析失败。
+     */
+    private fun <T> withConn(url: String, apiKey: String, timeoutMs: Long, block: (HttpURLConnection) -> T): T {
+        var c: HttpURLConnection? = null
+        try {
+            c = openConn(url, apiKey, timeoutMs)
+            return block(c)
+        } catch (e: UnknownHostException) {
+            val host = hostOf(url)
+            val ip = resolveViaDoh(host) ?: throw e
+            c?.disconnect()
+            c = openConn(ipUrlOf(url, ip), apiKey, timeoutMs, originalHost = host)
+            return block(c)
+        } finally {
+            c?.disconnect()
+        }
+    }
+
+    private fun openConn(url: String, apiKey: String, timeoutMs: Long, originalHost: String? = null): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = CONNECT_TIMEOUT
         c.readTimeout = timeoutMs.toInt()
         c.setRequestProperty("Accept", "application/json")
         if (apiKey.isNotBlank()) c.setRequestProperty("Authorization", "Bearer $apiKey")
+        if (originalHost != null) {
+            c.setRequestProperty("Host", originalHost)
+            if (c is HttpsURLConnection) {
+                c.hostnameVerifier = HostnameVerifier { _, session ->
+                    HttpsURLConnection.getDefaultHostnameVerifier().verify(originalHost, session)
+                }
+            }
+        }
         return c
+    }
+
+    private fun hostOf(url: String): String = URL(url).host
+
+    /** 原 URL 的主机名替换为 IP（保留协议/端口/路径/查询串）。 */
+    private fun ipUrlOf(url: String, ip: String): String {
+        val u = URL(url)
+        val port = if (u.port != -1) ":${u.port}" else ""
+        return "${u.protocol}://$ip$port${u.file}"
+    }
+
+    private val IPV4 = Regex("""\d{1,3}(\.\d{1,3}){3}""")
+
+    /** DoH 多源解析：返回首个 IPv4 地址，全部失败返回 null。 */
+    private fun resolveViaDoh(host: String): String? {
+        val endpoints = listOf(
+            "https://dns.alidns.com/resolve",
+            "https://doh.pub/dns-query",
+            "https://1.1.1.1/dns-query",
+            "https://cloudflare-dns.com/dns-query",
+            "https://8.8.8.8/resolve",
+            "https://dns.google/resolve"
+        )
+        for (ep in endpoints) {
+            try {
+                val c = URL("$ep?type=A&name=${enc(host)}").openConnection() as HttpURLConnection
+                c.connectTimeout = CONNECT_TIMEOUT
+                c.readTimeout = 15_000
+                c.setRequestProperty("Accept", "application/dns-json")
+                try {
+                    if (c.responseCode in 200..299) {
+                        val o = parseObject(c.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() })
+                        val arr = o?.getAsJsonArray("Answer")
+                        if (arr != null) {
+                            for (i in 0 until arr.size()) {
+                                val e = arr.get(i)
+                                if (!e.isJsonObject) continue
+                                val data = e.asJsonObject.get("data")?.takeIf { it.isJsonPrimitive }?.asString
+                                if (data != null && IPV4.matches(data)) return data
+                            }
+                        }
+                    }
+                } finally {
+                    c.disconnect()
+                }
+            } catch (_: Exception) {
+            }
+        }
+        return null
     }
 
     private fun parseObject(body: String): JsonObject? = runCatching {

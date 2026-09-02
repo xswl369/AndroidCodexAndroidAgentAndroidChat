@@ -16,8 +16,8 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-        versionCode = 69
-        versionName = "1.2.48"
+        versionCode = 70
+        versionName = "1.2.49"
     }
 
     buildTypes {
@@ -55,6 +55,8 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.gson)
     implementation(libs.okhttp)
+    implementation(libs.rhino)
+    implementation(libs.luaj)
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)

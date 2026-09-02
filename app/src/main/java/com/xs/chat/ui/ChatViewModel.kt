@@ -1,6 +1,7 @@
 package com.xs.chat.ui
 
 import android.app.Application
+import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -32,6 +33,8 @@ import com.xs.chat.plugins.DeviceControlPlugin
 import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.plugins.PluginRegistry
 import com.xs.chat.plugins.PluginRegistry.PluginInfo
+import com.xs.chat.plugins.ScriptRunner
+import com.xs.chat.plugins.ScriptStore
 import com.wirelessdebug.service.AdbShellController
 import com.wirelessdebug.service.RootController
 import java.io.File
@@ -160,6 +163,35 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return ok
     }
 
+    /**
+     * 添加脚本型插件（设置 → 插件 → 添加）：先把脚本写盘，成功后再登记元数据。
+     * 返回 null 表示成功，否则返回错误原因（由弹窗直接展示）。
+     */
+    fun addScriptPlugin(name: String, desc: String, deps: String, uri: Uri?, fileName: String): String? {
+        val app = getApplication<Application>()
+        val fname = fileName.substringAfterLast('/').substringAfterLast('\\').trim()
+        if (fname.isEmpty()) return "请选择脚本文件"
+        val pluginId = PluginRegistry.addScriptPlugin(settings, name, desc, fname, deps)
+            ?: return "仅支持 .sh / .py / .js / .lua 脚本"
+        val realUri = uri
+            ?: return rollbackScriptPlugin(app, pluginId, "无法读取所选文件")
+        val err = ScriptStore.save(app, PluginRegistry.userPlugins(settings).first { it.id == pluginId }, realUri, fname)
+        if (err != null) return rollbackScriptPlugin(app, pluginId, err)
+        refreshPlugins()
+        MemoryPlugin.log(app, "添加脚本插件", pluginId)
+        val p = PluginRegistry.userPlugins(settings).firstOrNull { it.id == pluginId }
+        if (p != null) aiPolishPlugin(p.id, p.name, "上传的 " + PluginRegistry.langLabel(p.lang) + " 脚本插件。" + desc)
+        return null
+    }
+
+    /** 脚本落盘失败时回滚：移除注册项并清理目录，返回原错误文案。 */
+    private fun rollbackScriptPlugin(app: Application, pluginId: String, reason: String): String {
+        PluginRegistry.removeUserPlugin(settings, pluginId)
+        ScriptStore.deleteDir(app, pluginId)
+        refreshPlugins()
+        return reason
+    }
+
     /** 添加插件后自动调用当前模型完善插件定义（触发指令 / 使用说明），AI 失败不影响插件本身。 */
     private fun aiPolishPlugin(id: String, name: String, desc: String) {
         val model = _ui.value.activeModel ?: return
@@ -196,9 +228,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 删除用户插件（内置插件不可删）。 */
+    /** 删除用户插件（内置插件不可删）；脚本插件连同脚本目录一并清理。 */
     fun removePlugin(pluginId: String) {
         if (PluginRegistry.removeUserPlugin(settings, pluginId)) {
+            ScriptStore.deleteDir(getApplication(), pluginId)
             refreshPlugins()
             MemoryPlugin.log(getApplication(), "删除插件", pluginId)
         }
@@ -499,6 +532,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
         // 媒体生成意图优先接管：命中则直接调生图/生视频插件，避免 AI 只回复提示词
         if (mediaGenIntent(content, pending)) return
+
+        // 脚本插件意图接管：说「用<插件名>…」时执行用户上传的脚本，其余文字作为脚本参数
+        if (scriptPluginIntent(content)) return
 
         val isNew = conversationId == null
         val id = conversationId ?: UUID.randomUUID().toString()
@@ -1092,6 +1128,60 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val result = WebSearchPlugin.search(query)
                 MemoryPlugin.log(app, "联网搜索", query.take(40))
                 completeAssistant(assistantId, result, emptyList())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pluginError(assistantId, e.message?.takeIf { it.isNotBlank() } ?: e::class.java.simpleName)
+            } finally {
+                finishPluginWork()
+            }
+        }
+    }
+
+    /** 输入框消息自动识别脚本插件意图：「用<插件名>…」或「<插件名>：任务…」时执行对应脚本。 */
+    private fun scriptPluginIntent(content: String): Boolean {
+        val enabled = _ui.value.enabledPlugins
+        val scripts = PluginRegistry.all(settings)
+            .filter { it.isScript && it.id in enabled }
+            .sortedByDescending { it.name.length }
+        if (scripts.isEmpty()) return false
+        val text = content.trim()
+        for (p in scripts) {
+            val esc = Regex.escape(p.name)
+            val labeled = Regex(
+                "^(?:请|麻烦)?(?:用|使用|调用|运行|执行|帮我用|use|run)\\s*$esc\\s*[:：,，]?\\s*(.*)$",
+                RegexOption.IGNORE_CASE
+            ).find(text)
+            val named = Regex("^$esc\\s*[:：]\\s*(.+)$", RegexOption.IGNORE_CASE).find(text)
+            val args = labeled?.groupValues?.get(1)?.trim() ?: named?.groupValues?.get(1)?.trim()
+            if (args == null) continue
+            runScriptPlugin(p, text, args)
+            return true
+        }
+        return false
+    }
+
+    /** 执行脚本插件：聊天内插入「【插件名】内容」，运行输出（stdout/stderr）回填为 assistant 回复。 */
+    fun runScriptPlugin(plugin: PluginInfo, raw: String, args: String) {
+        if (_ui.value.isStreaming) return
+        val app = getApplication<Application>()
+        pluginJob = viewModelScope.launch {
+            val assistantId = beginPluginWork("【" + plugin.name + "】" + raw, emptyList())
+            _ui.update { it.copy(isStreaming = true) }
+            updateAssistantProgress(assistantId, "▶ 运行脚本：" + plugin.scriptFile)
+            try {
+                val result = ScriptRunner.run(app, plugin, args) { step ->
+                    updateAssistantProgress(assistantId, step)
+                }
+                MemoryPlugin.log(app, "脚本插件", plugin.name + " " + args.take(30))
+                val output = result.output
+                val text = if (result.ok) {
+                    output.ifBlank { "（脚本执行成功，无输出）" }
+                } else {
+                    val head = result.error ?: "脚本执行失败"
+                    if (output.isBlank()) head else head + "\n\n" + output.take(4000)
+                }
+                completeAssistant(assistantId, text, emptyList())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

@@ -1,5 +1,11 @@
 package com.xs.chat.ui
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,6 +24,7 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -26,6 +33,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -36,6 +44,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,7 +73,7 @@ fun PluginScreen(
                 Text("插件", style = MaterialTheme.typography.titleLarge)
             }
             Text(
-                "右下角「+」添加自建插件，确认后 AI 会自动完善触发指令与使用说明。内置插件不可删除。",
+                "右下角「+」上传脚本添加插件（.sh / .py / .js / .lua），脚本在手机本地执行，功能由脚本决定。内置插件不可删除。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -103,6 +112,15 @@ fun PluginScreen(
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (plugin.isScript) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                "📜 " + PluginRegistry.langLabel(plugin.lang).ifBlank { "未知语言" } +
+                                    (if (plugin.deps.isNotBlank()) " · 依赖：" + plugin.deps else ""),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
                         if (state.generatingPluginId == plugin.id) {
                             Spacer(Modifier.height(4.dp))
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -153,48 +171,77 @@ fun PluginScreen(
     }
 
     if (showAdd) {
-        AddPluginDialog(
-            onAdd = { id, name, desc ->
-                val ok = vm.addPlugin(id, name, desc)
-                if (ok) showAdd = false
-                ok
+        AddScriptDialog(
+            onAdd = { name, desc, deps, uri, fileName ->
+                val err = vm.addScriptPlugin(name, desc, deps, uri, fileName)
+                if (err == null) showAdd = false
+                err
             },
             onDismiss = { showAdd = false }
         )
     }
 }
 
-/** 添加插件弹窗：id / 名称 / 描述。返回是否成功（失败时弹窗内提示原因）。 */
+//** 添加脚本插件弹窗：选择 .sh/.py/.js/.lua 脚本文件，脚本由 ScriptRunner 本地执行。返回错误文案（成功为 null）。 */
 @Composable
-private fun AddPluginDialog(
-    onAdd: (id: String, name: String, desc: String) -> Boolean,
+private fun AddScriptDialog(
+    onAdd: (name: String, desc: String, deps: String, uri: Uri?, fileName: String) -> String?,
     onDismiss: () -> Unit
 ) {
-    var id by remember { mutableStateOf("") }
+    val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var desc by remember { mutableStateOf("") }
+    var deps by remember { mutableStateOf("") }
+    var pickedUri by remember { mutableStateOf<Uri?>(null) }
+    var fileName by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            pickedUri = uri
+            val display = queryDisplayName(context, uri)
+            fileName = display
+            if (name.isBlank()) name = display.substringBeforeLast('.').take(20)
+            error = ""
+        }
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加插件") },
+        title = { Text("添加脚本插件") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = id,
-                    onValueChange = { id = it.lowercase().filter { c -> c.isLetterOrDigit() || c == '_' }.take(32) },
-                    label = { Text("插件 ID（英文，如 weather_check）") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "上传脚本并在本机执行，覆盖 .sh / .py / .js / .lua；聊天输入「用插件名 + 任务」即可调用。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it.take(20) },
-                    label = { Text("插件名称（如 天气查询）") },
+                    label = { Text("插件名称（留空默认脚本文件名）") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(Modifier.height(8.dp))
+                OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (fileName.isBlank()) "选择脚本文件" else fileName)
+                }
+                if (fileName.isNotBlank()) {
+                    val lang = PluginRegistry.langFor(fileName)
+                    Text(
+                        "语言：" + PluginRegistry.langLabel(lang).ifBlank { "不支持" } +
+                            (if (lang == "py") "（需要设备安装 Python，如 Termux）" else "（本机直接执行）"),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                OutlinedTextField(
+                    value = deps,
+                    onValueChange = { deps = it.take(120) },
+                    label = { Text("Python 依赖（可选，空格分隔，如 requests bs4）") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 OutlinedTextField(
                     value = desc,
                     onValueChange = { desc = it.take(120) },
@@ -202,20 +249,33 @@ private fun AddPluginDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (error.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
                     Text(error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
         confirmButton = {
             Button(onClick = {
-                if (id.length < 2) error = "插件 ID 至少 2 位（小写字母 / 数字 / 下划线）"
-                else if (name.isBlank()) error = "请填写插件名称"
-                else if (!onAdd(id, name, desc)) error = "ID 已存在或格式不对，请更换"
-            }) { Text("确认添加") }
+                if (fileName.isBlank()) error = "请先选择脚本文件"
+                else onAdd(name, desc, deps, pickedUri, fileName)?.let { error = it }
+            }) {
+                Text("确认添加")
+            }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
+}
+
+/** 从 SAF 内容 Uri 读取文件名（不可用时退回 uri 尾部）。 */
+private fun queryDisplayName(context: Context, uri: Uri): String {
+    return runCatching {
+        context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && c.moveToFirst()) {
+                c.getString(idx)?.takeIf { it.isNotBlank() }?.let { return it.substringAfterLast('/') }
+            }
+        }
+        uri.lastPathSegment?.substringAfterLast('/') ?: "script.txt"
+    }.getOrDefault("script.txt")
 }
