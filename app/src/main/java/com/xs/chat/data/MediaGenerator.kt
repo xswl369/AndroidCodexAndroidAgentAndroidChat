@@ -167,12 +167,16 @@ object MediaGenerator {
         extractVideoUrl(o)?.let { return MediaResult(url = it, mimeType = "video/mp4") }
         val id = extractVideoId(o) ?: throw ApiException("视频接口未返回任务ID: ${resp.take(300)}")
         val deadline = System.currentTimeMillis() + VIDEO_TIMEOUT
+        var lastProgress = 0
         while (System.currentTimeMillis() < deadline) {
             coroutineContext.ensureActive()
             val code = query("$base/videos/$id", model.apiKey)
             if (code in 200..299) {
                 val ob = parseObject(readBody("$base/videos/$id", model.apiKey, code)) ?: continue
-                ob.get("progress")?.takeIf { it.isJsonPrimitive }?.asInt?.let { p -> onProgress?.invoke(p) }
+                // server progress may be 0-1 float/string/with percent, phase switch may reset: normalize + monotonic hold
+                normalizedProgress(ob.get("progress"))?.let { p ->
+                    if (p > lastProgress) { lastProgress = p; onProgress?.invoke(p) }
+                }
                 val status = videoStatus(ob)
                 if (isDone(status) || ob.get("done")?.asBoolean == true) {
                     extractVideoUrl(ob)?.let { return MediaResult(url = it, mimeType = "video/mp4") }
@@ -327,6 +331,7 @@ object MediaGenerator {
             listOf("$base/agnesapi?video_id=${enc(videoId)}&model_name=${enc(model.modelId)}")
         }
         val deadline = System.currentTimeMillis() + VIDEO_TIMEOUT
+        var lastProgress = 0
         while (System.currentTimeMillis() < deadline) {
             coroutineContext.ensureActive()
             for (url in urls) {
@@ -335,7 +340,10 @@ object MediaGenerator {
                     if (code !in 200..299) return@runCatching
                     val body = readBody(url, model.apiKey, code)
                     val o = parseObject(body) ?: return@runCatching
-                    o.get("progress")?.takeIf { it.isJsonPrimitive }?.asInt?.let { p -> onProgress?.invoke(p) }
+                    // multiple candidate endpoints may return different phase progress; only take monotonic max
+                    normalizedProgress(o.get("progress"))?.let { p ->
+                        if (p > lastProgress) { lastProgress = p; onProgress?.invoke(p) }
+                    }
                     val status = videoStatus(o)
                     if (isDone(status)) {
                         extractVideoUrl(o)?.let { return MediaResult(url = it, mimeType = "video/mp4") }
@@ -352,6 +360,15 @@ object MediaGenerator {
     }
 
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+
+    /** 服务端 progress 归一化：兼容 0-100 整数、0-1 小数、带 % 字符串；非法值返回 null。 */
+    private fun normalizedProgress(el: JsonElement?): Int? {
+        if (el == null || !el.isJsonPrimitive) return null
+        val raw = el.asString.trim().removeSuffix("%")
+        val v = raw.toDoubleOrNull() ?: return null
+        val pct = if (v in 0.0..1.0) v * 100 else v
+        return pct.toInt().coerceIn(0, 100)
+    }
 
     private fun videoStatus(o: JsonObject): String {
         val out = o.getAsJsonObject("output")
@@ -585,7 +602,3 @@ object MediaGenerator {
 
     private fun dataUrl(bytes: ByteArray, mime: String): String = "data:$mime;base64," + b64(bytes)
 }
-
-
-
-

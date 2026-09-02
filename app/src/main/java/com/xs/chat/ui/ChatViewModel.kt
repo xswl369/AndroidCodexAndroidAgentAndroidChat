@@ -52,6 +52,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
@@ -796,15 +797,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val assistantId = beginPluginWork("【AI 生图】$clean", refs)
             val startMs = System.currentTimeMillis()
             _ui.update { it.copy(isStreaming = true) }
-            // 图片接口为同步请求，用模拟进度递增到 90%，完成时置 100
-            val sim = viewModelScope.launch {
-                var p = 3
-                while (isActive && p < 90) {
-                    p = (p + 4).coerceAtMost(90)
-                    updateMediaProgress(assistantId, p)
-                    delay(300)
-                }
-            }
+            // 图片接口为同步请求且无服务端回调：按耗时匀速模拟，45s 内到 90%，完成时置 100
+            val sim = launchSimulatedProgress(assistantId, AtomicBoolean(false), capPct = 90, pctPerSecond = 2f)
             try {
                 val refBytes = withContext(Dispatchers.IO) {
                     refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it) }
@@ -844,15 +838,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val assistantId = beginPluginWork("【AI 生视频】$clean", refs)
             val startMs = System.currentTimeMillis()
             _ui.update { it.copy(isStreaming = true) }
-            // 模拟进度兜底（服务端轮询进度返回后会覆盖为真实值）
-            val sim = viewModelScope.launch {
-                var p = 2
-                while (isActive && p < 90) {
-                    p = (p + 2).coerceAtMost(90)
-                    updateMediaProgress(assistantId, p)
-                    delay(500)
-                }
-            }
+            // 模拟进度仅作兜底：未收到服务端真实进度前，保守走到 40% 封顶；
+            // 轮询返回真实进度后立即停掉模拟，此后进度条只显示服务端真实值（只增不减）
+            val realProgressSeen = AtomicBoolean(false)
+            val sim = launchSimulatedProgress(assistantId, realProgressSeen, capPct = 40, pctPerSecond = 0.9f)
             try {
                 val frame = withContext(Dispatchers.IO) {
                     refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it) }
@@ -862,7 +851,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     app, model, clean, frame,
                     _ui.value.videoResolution,
                     seconds
-                ) { p -> updateMediaProgress(assistantId, p) }
+                ) { p -> realProgressSeen.set(true); updateMediaProgress(assistantId, p) }
                 sim.cancel()
                 updateMediaProgress(assistantId, 100)
                 MemoryPlugin.log(app, "生成视频", (clean.take(50) + "（$seconds 秒）"))
@@ -969,7 +958,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         return assistant.id
     }
 
-    /** 实时更新指定 assistant 消息的生成进度（0-100），用于图片/视频进度条。 */
+    /** 实时更新指定 assistant 消息的生成进度（0-100）：单调递增，杜绝进度条回退。 */
     private fun updateMediaProgress(assistantId: String, progress: Int) {
         _ui.update { st ->
             val idx = st.messages.indexOfLast { it.id == assistantId }
@@ -977,9 +966,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val p = progress.coerceIn(0, 100)
             val list = st.messages.toMutableList()
             val m = list[idx]
-            if (m.progress == p) return@update st
+            if (p <= (m.progress ?: 0)) return@update st
             list[idx] = m.copy(progress = p)
             st.copy(messages = list)
+        }
+    }
+
+    /** 模拟生成进度：按耗时匀速推进；收到服务端真实进度（realSeen）后立即退出。 */
+    private fun launchSimulatedProgress(assistantId: String, realSeen: AtomicBoolean, capPct: Int, pctPerSecond: Float): Job {
+        return viewModelScope.launch {
+            val t0 = System.currentTimeMillis()
+            var shown = 0
+            while (isActive && !realSeen.get()) {
+                val p = (((System.currentTimeMillis() - t0) / 1000f) * pctPerSecond + 1).toInt().coerceAtMost(capPct)
+                if (p != shown) {
+                    shown = p
+                    updateMediaProgress(assistantId, p)
+                }
+                delay(250)
+            }
         }
     }
 
@@ -1455,3 +1460,4 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
+
