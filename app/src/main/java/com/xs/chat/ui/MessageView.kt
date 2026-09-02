@@ -187,7 +187,8 @@ fun AssistantMessageView(
     onEdit: () -> Unit,
     onTranslate: () -> Unit,
     onShare: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onRunCode: (lang: String, code: String) -> Unit = { _, _ -> }
 ) {
     val lang = LocalLanguage.current
     val primary = MaterialTheme.colorScheme.primary
@@ -211,7 +212,8 @@ fun AssistantMessageView(
                 MarkdownText(
                     markdown = message.content,
                     textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    onRunCode = onRunCode
                 )
                 if (isStreaming) {
                     val progress = message.progress
@@ -295,7 +297,6 @@ fun AssistantMessageView(
         }
     }
 }
-
 
 
 

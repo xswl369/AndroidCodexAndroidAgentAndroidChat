@@ -308,7 +308,12 @@ fun SettingsScreen(
             Spacer(Modifier.height(4.dp))
             OutlinedButton(
                 onClick = {
-                    termuxStatus = TermuxManager.state(context).detail
+                    termuxBusy = true
+                    termuxScope.launch {
+                        // 真实探测在 IO 线程执行，主线程只做 UI 更新，避免 su 慢速时卡死界面
+                        termuxStatus = withContext(Dispatchers.IO) { TermuxManager.stateBlocking(context) }.detail
+                        termuxBusy = false
+                    }
                 },
                 enabled = !termuxBusy,
                 modifier = Modifier.fillMaxWidth()
@@ -336,7 +341,7 @@ fun SettingsScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Root 通道：" + if (RootController.isRooted()) "已获取 Root（uid 0）" else "未检测到 Root",
+                        "Root 通道：" + if (RootController.rootCached()) "已获取 Root（uid 0）" else "未检测到 Root",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1263,5 +1268,7 @@ private fun MediaParamRow(
         }
     }
 }
+
+
 
 
