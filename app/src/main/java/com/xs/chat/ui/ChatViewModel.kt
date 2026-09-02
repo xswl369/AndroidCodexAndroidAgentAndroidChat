@@ -29,6 +29,7 @@ import com.xs.chat.plugins.FileEditPlugin
 import com.xs.chat.plugins.MemoryPlugin
 import com.xs.chat.plugins.ImagePlugin
 import com.xs.chat.plugins.VideoPlugin
+import com.xs.chat.plugins.AppIndexPlugin
 import com.xs.chat.plugins.DeviceControlPlugin
 import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.plugins.PluginRegistry
@@ -1207,7 +1208,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (question) return false
         val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
         val kwTrigger = DEVICE_CONTROL_KEYWORDS.any { compact.contains(it.replace(" ", "")) }
-        if (openTrigger || kwTrigger) {
+        // 复杂指令索引识别：复合句式（应用名+动作/句首控制动词）也能命中设备控制
+        val idxTrigger = !question && AppIndexPlugin.isDeviceCommand(getApplication(), lower)
+        if (openTrigger || kwTrigger || idxTrigger) {
             _ui.update { it.copy(pendingAttachments = emptyList()) }
             runDeviceControl(content)
             return true
@@ -1460,4 +1463,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
+
+
 
