@@ -39,7 +39,7 @@ object OfflineAgent {
         // 1) 自动学习：相似指令技能回放（失败自动遗忘并重新解析）
         replaySkill(context, instruction, onProgress)?.let { return it }
         // 2) 规则解析 → 智能执行
-        val plan = parse(instruction) ?: return null
+        val plan = parse(context, instruction) ?: return null
         onProgress?.invoke("🤖 离线智能识别，开始执行：$instruction")
         val result = execute(context, plan.steps, onProgress)
         // 3) 自动学习：成功指令沉淀为技能
@@ -93,7 +93,7 @@ object OfflineAgent {
 
     private data class Plan(val steps: List<Step>)
 
-    private fun parse(text: String): Plan? {
+    private fun parse(context: Context, text: String): Plan? {
         val t = text.trim()
         // 给张三发微信：内容 / 向李四发送消息
         Regex("""^(给|向)\s*(.+?)\s*(?:发|发送|发个|发条)\s*(?:微信|消息|信息)?\s*[:：,，]?\s*(.+)$""").find(t)?.let {
@@ -138,6 +138,35 @@ object OfflineAgent {
         // 关闭弹窗/广告/跳过广告
         if (t.contains("关闭弹窗") || t.contains("关掉弹窗") || t.contains("关闭广告") || t.contains("关掉广告") || t.contains("跳过广告")) {
             return Plan(listOf(Step.ClosePopups))
+        }
+        // —— 复杂指令索引兜底：无需以「打开」开头，也能从复合句中抽出应用名执行 ——
+        // 例：「在抖音搜索华为手机并点进第一个视频」「去B站找一下我的关注」「打开微信看看」
+        val appName = AppIndexPlugin.extractAppName(context, t)
+        if (appName != null) {
+            val after = t.substringAfterLast(appName)
+                .trimStart('的', '中', '里', '内', '上', '，', ',', '、', '并', '再', '和').removePrefix("然后").removePrefix("还有")
+            Regex("""^(?:搜索|搜一下|搜|查找|查一下|看看|看一下|了解一下)\s*(.+)$""").find(after)?.let { m ->
+                val raw = m.groupValues[1].trim()
+                val kw = raw
+                    .removeSuffix("并点进第一个视频").removeSuffix("并点进第一条视频")
+                    .removeSuffix("并点进第一个结果").removeSuffix("并点进第一个")
+                    .removeSuffix("的第一个视频").removeSuffix("的第一个")
+                    .trim()
+                val tapFirst = raw.contains("第一个") || raw.contains("第一条") || raw.contains("最新")
+                if (kw.isNotBlank()) return Plan(listOf(Step.Open(appName), Step.Search(kw, tapFirst)))
+            }
+            if (after.contains("第一个") || after.contains("第一条") ||
+                after.startsWith("点开") || after.startsWith("点进") || after.contains("点进第一个")) {
+                return Plan(listOf(Step.Open(appName), Step.Wait, Step.TapFirst))
+            }
+            Regex("""^(?:找到|查找|定位|点击|点一下|点开|进入|找一下|打开)\s*(.+)$""").find(after)?.let { m ->
+                return Plan(listOf(Step.Open(appName), Step.FindTap(m.groupValues[1].trim())))
+            }
+            // 「打开应用看看」类：应用名后只剩语气助词/查看词，直接打开应用
+            val trailing = after.trim('的', '。', '！', '!', '，', ',', '啊', '呀', '吧', '呢')
+            if (trailing.isEmpty() || trailing == "看看" || trailing == "看下" || trailing == "看一下" || trailing == "一下") {
+                return Plan(listOf(Step.Open(appName)))
+            }
         }
         return null
     }
@@ -622,3 +651,7 @@ object OfflineAgent {
         try { Thread.sleep(ms) } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
     }
 }
+
+
+
+
