@@ -1,4 +1,5 @@
 package com.xs.chat.ui
+import android.util.Log
 
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -417,7 +418,7 @@ private fun CodeBlockView(
                     modifier = Modifier.weight(1f)
                 )
                 if (runLang != null && onRunCode != null) {
-                    IconButton(onClick = { onRunCode(block.lang, block.code) }) {
+                    IconButton(onClick = { Log.w("XSRunDebug", "run-click lang=" + block.lang + " codeLen=" + block.code.length); onRunCode(block.lang, block.code) }) {
                         Icon(
                             Icons.Rounded.PlayArrow,
                             contentDescription = "运行代码",

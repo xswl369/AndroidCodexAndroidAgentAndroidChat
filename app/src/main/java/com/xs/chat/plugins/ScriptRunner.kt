@@ -2,6 +2,7 @@ package com.xs.chat.plugins
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import android.util.Base64
 import com.xs.chat.plugins.PluginRegistry.PluginInfo
 import kotlinx.coroutines.CancellationException
@@ -36,6 +37,54 @@ import java.util.Locale
 object ScriptRunner {
 
     data class RunResult(val ok: Boolean, val output: String, val error: String? = null)
+
+    /**
+     * 将失败结果提炼为一句中文原因，供聊天卡片直接展示（覆盖常见报错场景）。
+     */
+    fun explainFailure(result: RunResult): String {
+        val text = (result.error ?: "") + "\n" + result.output
+        // 缺 Python 库：ModuleNotFoundError / ImportError
+        Regex("ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]").find(text)?.let { m ->
+            val mod = m.groupValues[1]
+            val extra = when (mod) {
+                "turtle" -> "（且 Android 无桌面窗口，turtle 无法弹窗绘图）"
+                "tkinter" -> "（GUI 库，Android 不可用）"
+                else -> ""
+            }
+            return "缺少 Python 库 " + mod + extra + "：内置引擎只带标准库（numpy/matplotlib/pip 均不可用），可让 AI 改用纯标准库写法"
+        }
+        // Shell 127：命令不存在
+        if ((result.error?.contains("脚本退出码 127") == true) || text.contains("inaccessible or not found")) {
+            return "脚本用到的命令在当前设备上不存在（如 python/pip），内置环境只有受限命令集"
+        }
+        // SELinux / 权限拒绝
+        if (text.contains("execute_no_trans") || text.contains("Permission denied") || text.contains("PermissionError")) {
+            return "系统权限拒绝：当前 ROM 的 SELinux 限制直接执行程序"
+        }
+        // Python traceback 通用翻译（NameError/SyntaxError/TypeError 等）
+        val errLine = text.lineSequence().filter { it.isNotBlank() }
+            .lastOrNull { Regex("\\w+(Error|Exception):").containsMatchIn(it) }
+        if (errLine != null) {
+            val kind = errLine.substringBefore(":").trim()
+            val msg = errLine.substringAfter(":").trim().take(120)
+            val reason = when {
+                kind.contains("Name") -> "代码引用了未定义的变量或名称"
+                kind.contains("Syntax") -> "代码存在语法错误"
+                kind.contains("Indent") -> "缩进错误（Python 对缩进敏感）"
+                kind.contains("Type") -> "数据类型不匹配"
+                kind.contains("Value") -> "传入的值或参数不合法"
+                kind.contains("ZeroDivision") -> "出现除零运算"
+                kind.contains("Attribute") -> "访问了不存在的对象属性"
+                kind.contains("Key") -> "字典缺少对应的键"
+                kind.contains("Index") -> "下标越界"
+                kind.contains("FileNotFound") || kind.contains("OSError") -> "文件或路径不存在/无权限"
+                kind.contains("Timeout") -> "操作超时"
+                else -> "Python 运行时异常（" + kind + "）"
+            }
+            return reason + (if (msg.isEmpty()) "" else "：" + msg)
+        }
+        return "脚本执行失败：请结合下方原始输出修正，或让 AI 改写脚本"
+    }
 
     private const val DEFAULT_TIMEOUT_MS = 180_000L
     private const val LANG_TIMEOUT_MS = 120_000L
@@ -307,6 +356,24 @@ object ScriptRunner {
     // ---------- Python：优先本地运行时可执行，否则走内置 Termux 链路 ----------
 
     private suspend fun runPython(context: Context, dir: File, plugin: PluginInfo, script: File, args: String, onProgress: ((String) -> Unit)?): RunResult {
+        // ① 嵌入式 Python 3.14（JNI + dlopen：免 Root/无线调试/文件 exec 权限，SELinux 收紧 ROM 亦可直跑）
+        val pyAvail = PyEngine.available(context)
+        Log.i("XSRunDebug", "pyAvail=" + pyAvail + " err=" + PyEngine.loadErrorText())
+        if (pyAvail) {
+            onProgress?.invoke("正在就绪内置 Python 3.14…")
+            val (ready, msg) = runCatching { TermuxManager.ensureLocalReady(context) }
+                .getOrElse { false to ("运行时解压异常：" + (it.message ?: it.javaClass.simpleName)) }
+            if (ready) {
+                onProgress?.invoke("▶ 内置 Python 3.14（应用内直跑）")
+                val deps = plugin.deps.trim()
+                if (deps.isNotEmpty()) onProgress?.invoke("嵌入式引擎不含 pip；第三方依赖请改用通道环境")
+                val (ok, out) = PyEngine.run(context, script.readText(StandardCharsets.UTF_8), args)
+                return if (ok) RunResult(true, out) else RunResult(false, out, "Python 脚本出错")
+            }
+            onProgress?.invoke(msg)
+            Log.w("XSRunDebug", "embedded python not ready: " + msg)
+        }
+
         val localPy = PY_CANDIDATES.map { File(it) }.firstOrNull { it.canExecute() }
         if (localPy != null) {
             val env = mutableMapOf("PYTHONDONTWRITEBYTECODE" to "1", "PYTHONUNBUFFERED" to "1")

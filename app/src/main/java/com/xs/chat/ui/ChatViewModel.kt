@@ -1178,6 +1178,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * 运行输出回填为 assistant 回复；结束后清理临时目录。
      */
     fun runCodeBlock(fenceLang: String, code: String) {
+        Log.w("XSRunDebug", "runCodeBlock begin lang=" + fenceLang)
         if (_ui.value.isStreaming) {
             notice("请等待当前回复完成后再次运行代码")
             return
@@ -1207,9 +1208,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             scriptFile = scriptName,
             lang = lang
         )
-        val target = ScriptStore.scriptFile(app, plugin)
+        val scriptDir = ScriptStore.dir(app, plugin.id)
         try {
-            target?.writeText(code.trim() + "\n")
+            if (!scriptDir.exists() && !scriptDir.mkdirs()) {
+                notice("无法创建脚本目录")
+                return
+            }
+            File(scriptDir, scriptName).writeText(code.trim() + "\n")
         } catch (e: Exception) {
             notice("写入脚本失败：" + (e.message ?: e.javaClass.simpleName))
             return
@@ -1248,7 +1253,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     output.ifBlank { "（脚本执行成功，无输出）" }
                 } else {
                     val head = result.error ?: "脚本执行失败"
-                    if (output.isBlank()) head else head + "\n\n" + output.take(4000)
+                    val reason = ScriptRunner.explainFailure(result)
+                    buildString {
+                        append("❌ ").append(head.ifBlank { "脚本执行失败" })
+                        if (reason.isNotBlank()) append("\n原因：").append(reason)
+                        if (output.isNotBlank()) append("\n\n原始输出：\n").append(output.take(4000))
+                    }
                 }
                 completeAssistant(assistantId, text, emptyList())
             } catch (e: CancellationException) {

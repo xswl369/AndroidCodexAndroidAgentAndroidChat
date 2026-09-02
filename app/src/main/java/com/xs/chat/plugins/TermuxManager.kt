@@ -81,6 +81,9 @@ object TermuxManager {
     private fun localPy(ctx: Context): File = File(localRoot(ctx), "bin/python3")
 
     /** 本地已就绪：解释器存在于应用私有目录且可执行（禁止执行/越权时返回 false）。 */
+    /** 确保应用私有目录运行时解压就绪（嵌入式引擎依赖；失败说明 ROM 禁止本地 exec）。 */
+    fun ensureLocalReady(ctx: Context): Pair<Boolean, String> = deployLocal(ctx)
+
     fun pythonLocalReady(ctx: Context): Boolean {
         val py = localPy(ctx)
         if (!py.isFile || !py.canRead()) return false
