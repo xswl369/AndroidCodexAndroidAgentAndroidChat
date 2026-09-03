@@ -1,10 +1,7 @@
 package com.xs.chat.ui
 
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +51,7 @@ import com.xs.chat.data.Attachment
 import com.xs.chat.data.CallMeta
 import com.xs.chat.data.ChatMessage
 import com.xs.chat.data.Role
+import com.xs.chat.plugins.WebSearchPlugin
 
 /** 消息竖三点菜单项。 */
 private enum class MsgAction { EDIT, TRANSLATE, SHARE, COPY, REGENERATE, DELETE }
@@ -100,16 +99,6 @@ private fun MessageMenu(
     }
 }
 
-/** 消息区域长按手势：长按弹出与竖三点一致的菜单。 */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun Modifier.longPressMenu(onMenu: () -> Unit): Modifier = combinedClickable(
-    onClick = {},
-    onLongClick = onMenu,
-    indication = null,
-    interactionSource = remember { MutableInteractionSource() }
-)
-
 @Composable
 fun UserMessageBubble(
     content: String,
@@ -125,9 +114,7 @@ fun UserMessageBubble(
         Surface(
             shape = RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp),
             color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier
-                .widthIn(max = 340.dp)
-                .longPressMenu { menuOpen = true }
+            modifier = Modifier.widthIn(max = 340.dp)
         ) {
             Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
                 if (attachments.isNotEmpty()) {
@@ -135,7 +122,10 @@ fun UserMessageBubble(
                     if (content.isNotBlank()) Spacer(Modifier.height(8.dp))
                 }
                 if (content.isNotBlank()) {
-                    Text(content, style = MaterialTheme.typography.bodyMedium)
+                    // 长按选中文字并弹出复制菜单（位置跟随长按处）
+                    SelectionContainer {
+                        Text(WebSearchPlugin.stripToolMarkup(content), style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
         }
@@ -204,17 +194,16 @@ fun AssistantMessageView(
                 modifier = Modifier.size(30.dp).clip(CircleShape)
             )
             Spacer(Modifier.width(10.dp))
-            Column(
-                Modifier
-                    .weight(1f)
-                    .longPressMenu { menuOpen = true }
-            ) {
-                MarkdownText(
-                    markdown = message.content,
-                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
-                    modifier = Modifier.fillMaxWidth(),
-                    onRunCode = onRunCode
-                )
+            Column(Modifier.weight(1f)) {
+                // 长按选中文字并就地弹出复制菜单
+                SelectionContainer {
+                    MarkdownText(
+                        markdown = WebSearchPlugin.stripToolMarkup(message.content),
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                        modifier = Modifier.fillMaxWidth(),
+                        onRunCode = onRunCode
+                    )
+                }
                 if (isStreaming) {
                     val progress = message.progress
                     if (progress != null) {

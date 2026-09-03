@@ -526,17 +526,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
 
-        // 设备控制意图优先接管：命中则直接操控手机（类 Codex 电脑版控制）
-        if (deviceControlIntent(content)) return
+        // 显式联网搜索指令优先：说「搜/查一下…」必联网（DeepSeek 同款）
+        if (webSearchIntent(content, explicitOnly = true)) return
 
-        // 联网搜索意图接管：命中则实时联网搜索
-        if (webSearchIntent(content)) return
+        // 设备控制意图：命中则直接操控手机（类 Codex 电脑版控制）
+        if (deviceControlIntent(content)) return
 
         // 媒体生成意图优先接管：命中则直接调生图/生视频插件，避免 AI 只回复提示词
         if (mediaGenIntent(content, pending)) return
 
         // 脚本插件意图接管：说「用<插件名>…」时执行用户上传的脚本，其余文字作为脚本参数
         if (scriptPluginIntent(content)) return
+
+        // DeepSeek 式内置联网搜索：事实型问题（新闻/天气/价格/查询等）自动触发
+        if (webSearchIntent(content, explicitOnly = false)) return
 
         val isNew = conversationId == null
         val id = conversationId ?: UUID.randomUUID().toString()
@@ -1108,39 +1111,122 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 输入框消息自动识别联网搜索意图：命中实时联网搜索（排除疑问句式）。 */
-    private fun webSearchIntent(content: String): Boolean {
-        if (!_ui.value.enabledPlugins.contains("web_search")) return false
-        val lower = content.lowercase(Locale.ROOT).trim().replace(Regex("^(请帮我|帮我|请|麻烦)"), "")
-        val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
-            || lower.endsWith("?") || lower.endsWith("？") || lower.endsWith("吗")
-        if (question) return false
-        val m = Regex("^(搜索|搜一下|搜|查一下|查找|查|联网搜|联网搜索|帮我搜|帮我查|web search|search)\\s+(.+)$").find(lower)
-        if (m != null) {
-            _ui.update { it.copy(pendingAttachments = emptyList()) }
-            runWebSearch(m.groupValues[2])
-            return true
-        }
-        return false
+    /** 事实型问题关键词：命中即自动触发内置联网搜索（DeepSeek 联网同策略）。 */
+    private val WEB_QUERY_KEYWORDS = listOf(
+        "如何", "怎么", "怎样", "什么样", "是什么", "什么是", "有哪些", "多少", "几号", "哪里", "何处",
+        "什么时候", "何时", "是否", "会不会", "能不能", "有没有", "最新", "最近", "今天", "明天", "昨日",
+        "本周", "下周", "新闻", "热搜", "热点", "股票", "股价", "价格", "行情", "汇率", "天气", "气温",
+        "预报", "台风", "地震", "比赛", "比分", "赛程", "结果", "名单", "榜单", "排行榜", "发布", "上线",
+        "更新", "事件", "事故", "评测", "推荐", "攻略", "教程", "措施", "下载", "怎么买", "多少钱", "为什么",
+        "进展", "现状", "对比", "哪个好", "值不值得", "是真的吗", "会怎样"
+    )
+
+    /** 内置联网搜索（DeepSeek 同款）：explicitOnly=true 只认显式指令；false 时事实型问题也会自动触发。 */
+    private fun webSearchIntent(content: String, explicitOnly: Boolean): Boolean {
+        val found = extractSearchQuery(content, explicitOnly) ?: return false
+        _ui.update { it.copy(pendingAttachments = emptyList()) }
+        runWebSearchReply(content, found.first, found.second)
+        return true
     }
 
-    fun runWebSearch(query: String) {
+    /**
+     * 提取联网搜索 query，返回 (query, 是否显式指令)。
+     * 显式指令：搜索/查一下/联网搜索+内容；自动触发：仅含事实型关键词的问句。
+     */
+    private fun extractSearchQuery(content: String, explicitOnly: Boolean): Pair<String, Boolean>? {
+        if (!_ui.value.enabledPlugins.contains("web_search")) return null
+        val text = content.trim()
+        if (text.isEmpty()) return null
+        // ① 显式指令：去掉礼貌前缀后直接取关键词后的内容（“搜索华为”“查一下天气”都可以）
+        val explicit = Regex(
+            "^(?:请|麻烦|帮我|请帮我)?(?:联网搜索|搜索一下|搜一下|搜索|查找|查询|帮我搜|帮我查|搜|查|web\\s*search|search)\\s*[:：,，]?\\s*(.+)$",
+            RegexOption.IGNORE_CASE
+        ).find(text)
+        if (explicit != null) {
+            val q = explicit.groupValues[1].trim()
+            if (q.isNotEmpty()) return q to true
+        }
+        if (explicitOnly) return null
+        // ② 闲聊 / 关于 AI 自身的问题不联网
+        if (text.length !in 4..200) return null
+        val lower = text.lowercase(Locale.ROOT)
+        if (Regex("^(你好|您好|hello|hi|哈喽|谢谢|感谢|好的|ok|知道了|继续|再来|再见|拜拜|晚安|早上好|下午好|晚上好)").containsMatchIn(lower)) return null
+        if (Regex("你(?:是谁|叫什么|的名字|能做什么|会什么|会干什么|有什么功能|是什么|是什么模型|的作者|怎么用|是什么时候|是谁做的)").containsMatchIn(lower)) return null
+        // 事实/时效关键词或日期数字（如“2026年9月3日”“3月30日”）命中 → 触发联网
+        val dateLike = Regex("""[0-9\u4E00-\u9FA5]{1,4}\s*[年月日号]""").containsMatchIn(text)
+        if (!dateLike && WEB_QUERY_KEYWORDS.none { lower.contains(it) }) return null
+        // 短追问自动合并上一轮问题，还原完整检索意图（如“我要的是2026年9月3日的”）
+        val prevUser = _ui.value.messages.lastOrNull { it.role == Role.USER }?.content?.trim()
+        if (prevUser != null && prevUser != text && text.length <= 24 && dateLike) {
+            return "$prevUser $text" to false
+        }
+        return text to false
+    }
+
+    /**
+     * 内置联网搜索主流程（DeepSeek 风格）：先出“正在搜索”占位，
+     * 搜索结束后把结果注入 AI 控制提示词，由 AI 流式整理回答并标注来源。
+     */
+    private fun runWebSearchReply(userContent: String, query: String, explicit: Boolean) {
         if (_ui.value.isStreaming) return
-        val app = getApplication<android.app.Application>()
         pluginJob = viewModelScope.launch {
-            val assistantId = beginPluginWork("【联网搜索】$query", emptyList())
-            _ui.update { it.copy(isStreaming = true) }
-            try {
-                val result = WebSearchPlugin.search(query)
-                MemoryPlugin.log(app, "联网搜索", query.take(40))
-                completeAssistant(assistantId, result, emptyList())
+            val assistantId = beginPluginWork(userContent, emptyList())
+            _ui.update { st ->
+                val last = st.messages.lastOrNull() ?: return@update st
+                if (last.id != assistantId) return@update st
+                st.copy(
+                    messages = st.messages.dropLast(1) + last.copy(content = "🔍 正在联网搜索「$query」…"),
+                    isStreaming = true,
+                    notice = null
+                )
+            }
+            val result = try {
+                withContext(Dispatchers.IO) { WebSearchPlugin.search(query) }
             } catch (e: CancellationException) {
+                // 手动停止（停止按钮）：清空占位，保留已发送提问
+                clearSearchPlaceholder(assistantId)
+                finishPluginWork()
                 throw e
             } catch (e: Exception) {
-                pluginError(assistantId, e.message?.takeIf { it.isNotBlank() } ?: e::class.java.simpleName)
-            } finally {
-                finishPluginWork()
+                null
             }
+            val failed = result == null || result.trimStart().startsWith("❌")
+            if (failed) MemoryPlugin.log(getApplication(), "联网搜索失败", query.take(40))
+            else MemoryPlugin.log(getApplication(), "联网搜索", query.take(40))
+            if (failed && explicit) {
+                // 显式搜索且失败：直接给出失败结果
+                completeAssistant(assistantId, result ?: "❌ 联网搜索失败：暂时无法获取结果，请稍后重试", emptyList())
+                finishPluginWork()
+                return@launch
+            }
+            clearSearchPlaceholder(assistantId)
+            streamWithSearchContext(assistantId, result.takeUnless { failed })
+        }
+    }
+
+    /** 搜索结果就绪后进入 AI 流式回复（无模型时退回直接显示原始结果）。 */
+    private fun streamWithSearchContext(assistantId: String, searchResult: String?) {
+        val model = _ui.value.activeModel
+        if (model == null) {
+            completeAssistant(
+                assistantId,
+                searchResult ?: "⚠️ 联网搜索暂时不可用，未获取到结果",
+                emptyList()
+            )
+            finishPluginWork()
+            return
+        }
+        stream(model, _ui.value.messages, searchResult = searchResult)
+    }
+
+    /** 清掉“正在搜索”占位，恢复普通 assistant 空消息。 */
+    private fun clearSearchPlaceholder(assistantId: String) {
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            val list = st.messages.toMutableList()
+            if (list[idx].content.startsWith("🔍 正在联网搜索")) list[idx] = list[idx].copy(content = "")
+            st.copy(messages = list)
         }
     }
 
@@ -1393,7 +1479,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 内部 ----------
 
-    private fun stream(model: AiModel, messages: List<ChatMessage>) {
+    private fun stream(model: AiModel, messages: List<ChatMessage>, searchResult: String? = null) {
         val instance = OpenAiApi(model.baseUrl, model.apiKey)
         api = instance
         val assistantId = pendingId ?: return
@@ -1402,10 +1488,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         streamingJob = viewModelScope.launch {
             var completed = false
             var usage: Usage? = null
+            var currentSearch = searchResult
+            var toolFollowMsg: ChatMessage? = null
+            var pass = 0
+            var sawContent = false
             try {
+                while (pass < 3) {
+                    pass++
+                    try {
                 completed = withContext(Dispatchers.IO) {
                     // 上下文裁剪：长对话只发最近消息，控制 prompt 长度、降低首 token 时延
-                    val trimmed = trimContext(messages)
+                    val trimmed = trimContext(toolFollowMsg?.let { messages + it } ?: messages)
                     val parts = resolveParts(trimmed)
                     val deltaBuf = StringBuilder()
                     var lastFlush = 0L
@@ -1416,10 +1509,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     instance.streamChat(
                         model = model.modelId,
                         messages = trimmed.filter { it.role != Role.SYSTEM },
-                        systemPrompt = _ui.value.systemPrompt.ifBlank { null },
+                        systemPrompt = buildSystemPrompt(if (toolFollowMsg != null) currentSearch else searchResult),
                         temperature = _ui.value.temperature,
                         attachmentParts = parts,
                         onDelta = { delta ->
+                            sawContent = true
                             deltaBuf.append(delta)
                             val now = System.currentTimeMillis()
                             // 流式 UI 节流：合并 ~40ms 内的增量，减少每 token 一次 Compose 重组
@@ -1431,12 +1525,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         onUsage = { usage = it }
                     ).also { flushDelta() }
                 }
+                // 模型输出原生 function:web_search 工具语法时：执行真实搜索并追加一轮续答
+                if (completed) {
+                    val toolQuery = WebSearchPlugin.extractToolSearchQuery(assistantContent(assistantId))
+                    sanitizeAssistantContent(assistantId)
+                    if (toolQuery == null) break
+                    val res = withContext(Dispatchers.IO) { WebSearchPlugin.search(toolQuery) }
+                    if (res.isNullOrBlank() || res.trimStart().startsWith("❌")) break
+                    Log.w(TAG, "WebSearch follow-up query=$toolQuery")
+                    MemoryPlugin.log(getApplication(), "联网搜索(由模型改写)", toolQuery.take(40))
+                    currentSearch = res
+                    clearAssistantContent(assistantId)
+                    toolFollowMsg = ChatMessage(
+                        role = Role.USER,
+                        content = "请直接综合以上联网搜索结果，回答我最初提出的问题；不要输出任何工具调用标记或搜索过程描述。",
+                        attachments = emptyList()
+                    )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Socket/网关瞬时中断且未产出任何内容：自动重试一次，规避偶发断流
+                    if (!sawContent && pass < 3) {
+                        Log.w(TAG, "stream retry after: " + (e.message ?: e.javaClass.simpleName))
+                        continue
+                    }
+                    appendError(assistantId, e.message ?: "网络请求失败")
+                    break
+                }
+                }
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Exception) {
-                appendError(assistantId, e.message ?: "网络请求失败")
             }
             if (!_ui.value.isStreaming) return@launch // 已被 stop() 接管
+            if (completed && assistantContent(assistantId).isBlank()) {
+                // 工具调用被清洗后无有效内容（或模型空回复）：给出显式提示，避免空白气泡
+                _ui.update { st ->
+                    val idx = st.messages.indexOfLast { it.id == assistantId }
+                    if (idx < 0) return@update st
+                    val msg = st.messages[idx]
+                    st.copy(messages = st.messages.toMutableList().also {
+                        it[idx] = msg.copy(content = "⚠️ 模型未返回有效内容，请稍后重试或换个问法。", error = true)
+                    })
+                }
+            }
             if (completed) {
                 attachCallMeta(
                     assistantId,
@@ -1461,6 +1593,56 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun trimContext(messages: List<ChatMessage>): List<ChatMessage> =
         if (messages.size <= MAX_CONTEXT_MESSAGES) messages
         else messages.takeLast(MAX_CONTEXT_MESSAGES)
+
+    /** 组装 system prompt：用户自定义提示词 + 联网搜索结果控制提示词（DeepSeek 联网回复策略）。 */
+    private fun buildSystemPrompt(searchResult: String?): String? {
+        val base = _ui.value.systemPrompt.ifBlank { null }
+        if (searchResult.isNullOrBlank()) return base
+        val control = """
+            以下是针对你问题的实时联网搜索结果：
+
+            <联网搜索结果>
+            $searchResult
+            </联网搜索结果>
+
+            回答规则：
+            1. 优先基于搜索结果回答，关键事实用 [来源N] 标注，并在回答末尾附上对应来源链接；
+            2. 若搜索结果与问题无关或信息不足，明确说明“联网搜索未找到直接信息”，再基于自身知识谨慎回答，不要编造结果中不存在的细节；
+            3. 涉及时间、数字、名称时以搜索结果为准；多个来源矛盾时汇总差异并说明；
+            4. 用与用户提问相同的语言作答，保持自然流畅。
+            5. 直接回答用户问题，禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
+        """.trimIndent()
+        return if (base == null) control else "$base\n\n$control"
+    }
+
+    /** 读取指定 assistant 消息当前完整内容（流式过程）。 */
+    private fun assistantContent(assistantId: String): String {
+        val m = _ui.value.messages.lastOrNull { it.id == assistantId } ?: return ""
+        return m.content
+    }
+
+    /** 清洗消息里的模型工具调用残留（<|tool_call>、function:web_search 等）。 */
+    private fun sanitizeAssistantContent(assistantId: String) {
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            val msg = st.messages[idx]
+            val clean = WebSearchPlugin.stripToolMarkup(msg.content)
+            if (clean == msg.content) return@update st
+            st.copy(messages = st.messages.toMutableList().also { it[idx] = msg.copy(content = clean) })
+        }
+    }
+
+    /** 清空消息内容（续答前丢弃“我来帮您搜索…”这类开场白）。 */
+    private fun clearAssistantContent(assistantId: String) {
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            val msg = st.messages[idx]
+            if (msg.content.isEmpty()) return@update st
+            st.copy(messages = st.messages.toMutableList().also { it[idx] = msg.copy(content = "") })
+        }
+    }
 
     private fun appendDelta(assistantId: String, delta: String) {
         _ui.update { st ->
@@ -1537,4 +1719,3 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
-

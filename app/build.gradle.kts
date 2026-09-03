@@ -16,8 +16,8 @@ android {
         applicationId = "com.xs.chat"
         minSdk = 23
         targetSdk = 37
-          versionCode = 82
-          versionName = "1.2.61"
+          versionCode = 83
+          versionName = "1.2.62"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // 16KB page-size: 64-bit only (upstream 32-bit ABI libs are 4KB-aligned)
         ndk {
@@ -87,7 +87,6 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }
-
 
 
 

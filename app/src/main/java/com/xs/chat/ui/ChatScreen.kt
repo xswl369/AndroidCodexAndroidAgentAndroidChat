@@ -811,7 +811,7 @@ private fun ChatInputBar(
                             Box(
                                 contentAlignment = Alignment.Center,
                                 modifier = Modifier
-                                    .size(34.dp)
+                                    .size(68.dp)
                                     .clip(CircleShape)
                                     .background(if (micRecording) Color(0x33F44336) else Color.Transparent)
                                     .combinedClickable(
@@ -822,7 +822,7 @@ private fun ChatInputBar(
                                 Icon(
                                     Icons.Rounded.Mic,
                                     contentDescription = Lang.t(lang, "mic"),
-                                    modifier = Modifier.size(20.dp),
+                                    modifier = Modifier.size(40.dp),
                                     tint = if (micRecording) Color(0xFFF44336) else Color.Unspecified
                                 )
                             }
@@ -841,11 +841,12 @@ private fun ChatInputBar(
                         }
                     },
                     trailingIcon = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 加号与发送按钮间隔再缩小 1/3（图标内边距 28dp → 约 19dp）
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(-9.dp)) {
                             // 加号：添加附件 / 触发内置插件（位于发送按钮左侧，输入框内部）
                             Box {
-                                IconButton(onClick = { showMenu = true }, modifier = Modifier.size(34.dp)) {
-                                    Icon(Icons.Rounded.Add, contentDescription = Lang.t(lang, "add"), modifier = Modifier.size(20.dp))
+                                IconButton(onClick = { showMenu = true }, modifier = Modifier.size(68.dp)) {
+                                    Icon(Icons.Rounded.Add, contentDescription = Lang.t(lang, "add"), modifier = Modifier.size(40.dp))
                                 }
                                 DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                                     DropdownMenuItem(
@@ -882,12 +883,12 @@ private fun ChatInputBar(
                                 }
                             }
                             if (state.isStreaming) {
-                                IconButton(onClick = onStop, modifier = Modifier.size(34.dp)) {
+                                IconButton(onClick = onStop, modifier = Modifier.size(68.dp)) {
                                     Icon(
                                         Icons.Rounded.Stop,
                                         contentDescription = Lang.t(lang, "stop"),
                                         tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(40.dp)
                                     )
                                 }
                             } else {
@@ -899,13 +900,13 @@ private fun ChatInputBar(
                                         }
                                     },
                                     enabled = canSend,
-                                    modifier = Modifier.size(34.dp)
+                                    modifier = Modifier.size(68.dp)
                                 ) {
                                     Icon(
                                         Icons.Rounded.ArrowUpward,
                                         contentDescription = Lang.t(lang, "send"),
                                         tint = if (canSend) primary else MaterialTheme.colorScheme.outline,
-                                        modifier = Modifier.size(20.dp)
+                                        modifier = Modifier.size(40.dp)
                                     )
                                 }
                             }
