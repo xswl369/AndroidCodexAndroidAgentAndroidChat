@@ -41,6 +41,16 @@ data class CallMeta(
     val callCount: Int = 1
 )
 
+/** 联网搜索（元宝同款）：参考资料条目，编号与正文 [N] 引用一一对应。 */
+data class SearchReference(
+    val title: String,
+    val url: String,
+    val snippet: String = ""
+) {
+    /** 展示域名（如 bing.com），便于辨认来源站点。 */
+    val domain: String get() = runCatching { java.net.URI(url).host }.getOrDefault("")
+}
+
 data class ChatMessage(
     val id: String = UUID.randomUUID().toString(),
     val role: Role,
@@ -52,7 +62,11 @@ data class ChatMessage(
     /** 调用统计；旧版本 JSON 无此字段时为 null */
     val callMeta: CallMeta? = null,
     /** 生成进度 0-100；图片/视频生成中实时更新，完成后置 null */
-    val progress: Int? = null
+    val progress: Int? = null,
+    /** 联网搜索资料；旧版本 JSON 无此字段时为 null */
+    val references: List<SearchReference>? = null,
+    /** 联网搜索状态（「正在全网搜索…」「已找到 N 篇相关内容」）；仅供 UI 展示，不进入模型上下文 */
+    val searchMeta: String? = null
 )
 
 /** 附件预览：图片附件可以没有文字说明。 */
@@ -130,4 +144,3 @@ data class ApiConfig(
     val baseUrl: String,
     val apiKey: String
 )
-

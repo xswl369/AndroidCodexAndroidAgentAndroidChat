@@ -24,6 +24,7 @@ import com.xs.chat.data.OpenAiApi
 import com.xs.chat.data.Usage
 import com.xs.chat.data.PickedAttachment
 import com.xs.chat.data.Role
+import com.xs.chat.data.SearchReference
 import com.xs.chat.data.SettingsStore
 import com.xs.chat.plugins.FileEditPlugin
 import com.xs.chat.plugins.MemoryPlugin
@@ -87,6 +88,10 @@ data class ChatUiState(
     val devicePairNeeded: Boolean = false,
     val plugins: List<PluginInfo> = PluginRegistry.plugins,
     val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet(),
+    /** 联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启，默认自动。 */
+    val webSearchMode: Int = 1,
+    /** 思考深度（Codex 同款）：auto / low / medium / high / xhigh。 */
+    val reasoningEffort: String = "auto",
     /** 正在被 AI 完善定义的插件 id（添加插件后异步生成触发指令/使用说明）。 */
     val generatingPluginId: String? = null
 )
@@ -142,9 +147,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 memoryLimit = settings.memoryLimit,
                 rootControlEnabled = settings.rootControlEnabled,
                 plugins = PluginRegistry.all(settings),
+                webSearchMode = settings.webSearchMode,
+                reasoningEffort = settings.reasoningEffort,
                 enabledPlugins = PluginRegistry.all(settings).map { it.id }.filter { settings.pluginEnabled(it) }.toSet()
             )
         }
+    }
+
+    /** 切换思考深度（Codex 同款）：auto / low / medium / high / xhigh。 */
+    fun setReasoningEffort(effort: String) {
+        settings.reasoningEffort = effort
+        _ui.update { it.copy(reasoningEffort = effort) }
+        MemoryPlugin.log(getApplication(), "思考深度", effort)
+    }
+
+    /** 切换联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启。 */
+    fun setWebSearchMode(mode: Int) {
+        settings.webSearchMode = mode
+        _ui.update { it.copy(webSearchMode = mode) }
+        MemoryPlugin.log(
+            getApplication(), "联网搜索",
+            when (mode) { 0 -> "关闭"; 2 -> "总是开启"; else -> "自动" }
+        )
     }
 
     /** 切换内置插件开关（设置 → 插件）。 */
@@ -526,7 +550,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
 
-        // 显式联网搜索指令优先：说「搜/查一下…」必联网（DeepSeek 同款）
+        // 显式联网搜索指令优先：说「搜/查一下…」必联网（元宝同款）
         if (webSearchIntent(content, explicitOnly = true)) return
 
         // 设备控制意图：命中则直接操控手机（类 Codex 电脑版控制）
@@ -538,7 +562,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 脚本插件意图接管：说「用<插件名>…」时执行用户上传的脚本，其余文字作为脚本参数
         if (scriptPluginIntent(content)) return
 
-        // DeepSeek 式内置联网搜索：事实型问题（新闻/天气/价格/查询等）自动触发
+        // 内置联网搜索（元宝同款）：按当前模式自动/总是开启触发
         if (webSearchIntent(content, explicitOnly = false)) return
 
         val isNew = conversationId == null
@@ -1121,7 +1145,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         "进展", "现状", "对比", "哪个好", "值不值得", "是真的吗", "会怎样"
     )
 
-    /** 内置联网搜索（DeepSeek 同款）：explicitOnly=true 只认显式指令；false 时事实型问题也会自动触发。 */
+    /** 内置联网搜索（元宝同款）：explicitOnly=true 只认显式指令；false 时按当前模式自动触发。 */
     private fun webSearchIntent(content: String, explicitOnly: Boolean): Boolean {
         val found = extractSearchQuery(content, explicitOnly) ?: return false
         _ui.update { it.copy(pendingAttachments = emptyList()) }
@@ -1131,10 +1155,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 提取联网搜索 query，返回 (query, 是否显式指令)。
-     * 显式指令：搜索/查一下/联网搜索+内容；自动触发：仅含事实型关键词的问句。
+     * 显式指令：搜索/查一下/联网搜索+内容；自动触发：仅含事实型关键词的问句；总是开启：一切提问。
      */
     private fun extractSearchQuery(content: String, explicitOnly: Boolean): Pair<String, Boolean>? {
         if (!_ui.value.enabledPlugins.contains("web_search")) return null
+        val mode = _ui.value.webSearchMode
         val text = content.trim()
         if (text.isEmpty()) return null
         // ① 显式指令：去掉礼貌前缀后直接取关键词后的内容（“搜索华为”“查一下天气”都可以）
@@ -1144,15 +1169,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         ).find(text)
         if (explicit != null) {
             val q = explicit.groupValues[1].trim()
-            if (q.isNotEmpty()) return q to true
+            if (q.isNotEmpty()) return if (mode == WebSearchPlugin.MODE_OFF) null else q to true
         }
         if (explicitOnly) return null
-        // ② 闲聊 / 关于 AI 自身的问题不联网
+        // ② 总是开启：每次提问都自动联网搜索（元宝同款）
+        if (mode == WebSearchPlugin.MODE_ALWAYS) return text to false
+        // ③ 自动：闲聊 / 关于 AI 自身的问题不联网
         if (text.length !in 4..200) return null
         val lower = text.lowercase(Locale.ROOT)
         if (Regex("^(你好|您好|hello|hi|哈喽|谢谢|感谢|好的|ok|知道了|继续|再来|再见|拜拜|晚安|早上好|下午好|晚上好)").containsMatchIn(lower)) return null
         if (Regex("你(?:是谁|叫什么|的名字|能做什么|会什么|会干什么|有什么功能|是什么|是什么模型|的作者|怎么用|是什么时候|是谁做的)").containsMatchIn(lower)) return null
-        // 事实/时效关键词或日期数字（如“2026年9月3日”“3月30日”）命中 → 触发联网
+        // ④ 事实/时效关键词或日期数字（如“2026年9月3日”“3月30日”）命中 → 触发联网
         val dateLike = Regex("""[0-9\u4E00-\u9FA5]{1,4}\s*[年月日号]""").containsMatchIn(text)
         if (!dateLike && WEB_QUERY_KEYWORDS.none { lower.contains(it) }) return null
         // 短追问自动合并上一轮问题，还原完整检索意图（如“我要的是2026年9月3日的”）
@@ -1164,48 +1191,51 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 内置联网搜索主流程（DeepSeek 风格）：先出“正在搜索”占位，
-     * 搜索结束后把结果注入 AI 控制提示词，由 AI 流式整理回答并标注来源。
+     * 联网搜索主流程（元宝同款）：气泡顶部先出「正在全网搜索…」状态，
+     * 搜索完成后变为「已找到 N 篇相关内容，正在生成回答…」，
+     * 结果注入 AI 控制提示词，由 AI 流式整理回答并标注 [N] 引用，回答下方渲染参考资料卡片。
      */
     private fun runWebSearchReply(userContent: String, query: String, explicit: Boolean) {
         if (_ui.value.isStreaming) return
         pluginJob = viewModelScope.launch {
             val assistantId = beginPluginWork(userContent, emptyList())
-            _ui.update { st ->
-                val last = st.messages.lastOrNull() ?: return@update st
-                if (last.id != assistantId) return@update st
-                st.copy(
-                    messages = st.messages.dropLast(1) + last.copy(content = "🔍 正在联网搜索「$query」…"),
-                    isStreaming = true,
-                    notice = null
-                )
-            }
-            val result = try {
+            updateSearchMeta(assistantId, "正在全网搜索「$query」…")
+            val outcome = try {
                 withContext(Dispatchers.IO) { WebSearchPlugin.search(query) }
             } catch (e: CancellationException) {
-                // 手动停止（停止按钮）：清空占位，保留已发送提问
+                // 手动停止（停止按钮）：清空状态，保留已发送提问
                 clearSearchPlaceholder(assistantId)
                 finishPluginWork()
                 throw e
             } catch (e: Exception) {
                 null
             }
-            val failed = result == null || result.trimStart().startsWith("❌")
+            val failed = outcome == null
             if (failed) MemoryPlugin.log(getApplication(), "联网搜索失败", query.take(40))
             else MemoryPlugin.log(getApplication(), "联网搜索", query.take(40))
             if (failed && explicit) {
                 // 显式搜索且失败：直接给出失败结果
-                completeAssistant(assistantId, result ?: "❌ 联网搜索失败：暂时无法获取结果，请稍后重试", emptyList())
+                clearSearchPlaceholder(assistantId)
+                completeAssistant(assistantId, "❌ 联网搜索失败：暂时无法获取结果，请稍后重试", emptyList())
                 finishPluginWork()
                 return@launch
             }
-            clearSearchPlaceholder(assistantId)
-            streamWithSearchContext(assistantId, result.takeUnless { failed })
+            // 元宝同款进度：找到结果后更新状态文案，随后开始流式生成
+            updateSearchMetaOnly(
+                assistantId,
+                if (failed) "⚠️ 联网搜索未获取到结果"
+                else "✅ 已从全网找到 ${outcome?.refs?.size ?: 0} 篇相关内容，正在生成回答…"
+            )
+            streamWithSearchContext(assistantId, outcome?.text, outcome?.refs)
         }
     }
 
     /** 搜索结果就绪后进入 AI 流式回复（无模型时退回直接显示原始结果）。 */
-    private fun streamWithSearchContext(assistantId: String, searchResult: String?) {
+    private fun streamWithSearchContext(
+        assistantId: String,
+        searchResult: String?,
+        refs: List<SearchReference>? = null
+    ) {
         val model = _ui.value.activeModel
         if (model == null) {
             completeAssistant(
@@ -1213,19 +1243,55 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 searchResult ?: "⚠️ 联网搜索暂时不可用，未获取到结果",
                 emptyList()
             )
+            if (!refs.isNullOrEmpty()) attachReferences(assistantId, refs)
             finishPluginWork()
             return
         }
-        stream(model, _ui.value.messages, searchResult = searchResult)
+        stream(model, _ui.value.messages, searchResult = searchResult, refs = refs)
     }
 
-    /** 清掉“正在搜索”占位，恢复普通 assistant 空消息。 */
+    /** AI 回复中的搜索状态（元宝同款）：写入 assistant 气泡的 searchMeta（不进入模型上下文）。 */
+    private fun updateSearchMeta(assistantId: String, meta: String) {
+        _ui.update { st ->
+            val last = st.messages.lastOrNull() ?: return@update st
+            if (last.id != assistantId) return@update st
+            st.copy(
+                messages = st.messages.dropLast(1) + last.copy(searchMeta = meta),
+                isStreaming = true,
+                notice = null
+            )
+        }
+    }
+
+    /** 仅更新搜索状态文案（搜索完成后的进度提示，不改动流式状态）。 */
+    private fun updateSearchMetaOnly(assistantId: String, meta: String) {
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            val msg = st.messages[idx] ?: return@update st
+            st.copy(messages = st.messages.toMutableList().also { it[idx] = msg.copy(searchMeta = meta) })
+        }
+    }
+
+    /** 为指定 assistant 消息补充联网搜索参考资料（UI 渲染「参考资料」卡片）。 */
+    private fun attachReferences(assistantId: String, references: List<SearchReference>) {
+        _ui.update { st ->
+            val idx = st.messages.indexOfLast { it.id == assistantId }
+            if (idx < 0) return@update st
+            if (!st.messages[idx].references.isNullOrEmpty()) return@update st
+            val list = st.messages.toMutableList()
+            list[idx] = st.messages[idx].copy(references = references)
+            st.copy(messages = list)
+        }
+    }
+
+    /** 清掉“正在搜索”状态（手动停止 / 显式搜索失败时调用）。 */
     private fun clearSearchPlaceholder(assistantId: String) {
         _ui.update { st ->
             val idx = st.messages.indexOfLast { it.id == assistantId }
             if (idx < 0) return@update st
             val list = st.messages.toMutableList()
-            if (list[idx].content.startsWith("🔍 正在联网搜索")) list[idx] = list[idx].copy(content = "")
+            if (list[idx].searchMeta != null) list[idx] = list[idx].copy(searchMeta = null)
             st.copy(messages = list)
         }
     }
@@ -1479,7 +1545,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 内部 ----------
 
-    private fun stream(model: AiModel, messages: List<ChatMessage>, searchResult: String? = null) {
+    private fun stream(
+        model: AiModel,
+        messages: List<ChatMessage>,
+        searchResult: String? = null,
+        refs: List<SearchReference>? = null
+    ) {
         val instance = OpenAiApi(model.baseUrl, model.apiKey)
         api = instance
         val assistantId = pendingId ?: return
@@ -1489,6 +1560,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             var completed = false
             var usage: Usage? = null
             var currentSearch = searchResult
+            var currentRefs = refs
             var toolFollowMsg: ChatMessage? = null
             var pass = 0
             var sawContent = false
@@ -1511,6 +1583,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         messages = trimmed.filter { it.role != Role.SYSTEM },
                         systemPrompt = buildSystemPrompt(if (toolFollowMsg != null) currentSearch else searchResult),
                         temperature = _ui.value.temperature,
+                        reasoningEffort = _ui.value.reasoningEffort,
                         attachmentParts = parts,
                         onDelta = { delta ->
                             sawContent = true
@@ -1530,11 +1603,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val toolQuery = WebSearchPlugin.extractToolSearchQuery(assistantContent(assistantId))
                     sanitizeAssistantContent(assistantId)
                     if (toolQuery == null) break
+                    if (!_ui.value.enabledPlugins.contains("web_search") || _ui.value.webSearchMode == WebSearchPlugin.MODE_OFF) break
                     val res = withContext(Dispatchers.IO) { WebSearchPlugin.search(toolQuery) }
-                    if (res.isNullOrBlank() || res.trimStart().startsWith("❌")) break
+                    if (res == null) break
                     Log.w(TAG, "WebSearch follow-up query=$toolQuery")
                     MemoryPlugin.log(getApplication(), "联网搜索(由模型改写)", toolQuery.take(40))
-                    currentSearch = res
+                    currentSearch = res.text
+                    currentRefs = res.refs
+                    updateSearchMetaOnly(assistantId, "✅ 已从全网找到 ${res.refs.size} 篇相关内容，正在继续生成回答…")
                     clearAssistantContent(assistantId)
                     toolFollowMsg = ChatMessage(
                         role = Role.USER,
@@ -1578,6 +1654,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         durationMs = System.currentTimeMillis() - startMs
                     )
                 )
+                if (!currentRefs.isNullOrEmpty()) attachReferences(assistantId, currentRefs)
             }
             _ui.update { it.copy(isStreaming = false) }
             streamingJob = null
@@ -1594,23 +1671,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (messages.size <= MAX_CONTEXT_MESSAGES) messages
         else messages.takeLast(MAX_CONTEXT_MESSAGES)
 
-    /** 组装 system prompt：用户自定义提示词 + 联网搜索结果控制提示词（DeepSeek 联网回复策略）。 */
+    /** 组装 system prompt：用户自定义提示词 + 联网搜索结果控制提示词（元宝联网回复策略）。 */
     private fun buildSystemPrompt(searchResult: String?): String? {
         val base = _ui.value.systemPrompt.ifBlank { null }
         if (searchResult.isNullOrBlank()) return base
         val control = """
-            以下是针对你问题的实时联网搜索结果：
+            以下是针对你问题的实时联网搜索结果（每条以 [来源N] 开头）：
 
             <联网搜索结果>
             $searchResult
             </联网搜索结果>
 
             回答规则：
-            1. 优先基于搜索结果回答，关键事实用 [来源N] 标注，并在回答末尾附上对应来源链接；
+            1. 优先基于搜索结果回答；引用位置用 [N] 数字编号标注（如 [1]、[2]），编号必须与 <联网搜索结果> 中 [来源N] 的序号一一对应，禁止编造不存在的编号；
             2. 若搜索结果与问题无关或信息不足，明确说明“联网搜索未找到直接信息”，再基于自身知识谨慎回答，不要编造结果中不存在的细节；
             3. 涉及时间、数字、名称时以搜索结果为准；多个来源矛盾时汇总差异并说明；
-            4. 用与用户提问相同的语言作答，保持自然流畅。
-            5. 直接回答用户问题，禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
+            4. 用与用户提问相同的语言作答，保持自然流畅；
+            5. 不要在回答末尾手动列出网址或参考文献（界面会自动展示参考资料），直接结束正文；禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
         """.trimIndent()
         return if (base == null) control else "$base\n\n$control"
     }

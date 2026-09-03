@@ -67,6 +67,16 @@ class SettingsStore(context: Context) {
         sp.edit().putBoolean(KEY_PLUGIN_PREFIX + pluginId, enabled).apply()
     }
 
+    /** 联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启，默认为自动。 */
+    var webSearchMode: Int
+        get() = sp.getInt(KEY_WEB_SEARCH_MODE, 1).coerceIn(0, 2)
+        set(value) = sp.edit().putInt(KEY_WEB_SEARCH_MODE, value.coerceIn(0, 2)).apply()
+
+    /** 思考深度（Codex 同款）：auto / low / medium / high / xhigh，默认 auto（不传参，由服务端决定）。 */
+    var reasoningEffort: String
+        get() = sp.getString(KEY_REASONING_EFFORT, "auto").orEmpty()
+        set(value) = sp.edit().putString(KEY_REASONING_EFFORT, value).apply()
+
     /** 用户自建插件列表（JSON 数组 [{id,name,desc}]，插件管理页添加/删除）。 */
     fun userPluginsJson(): String = sp.getString(KEY_USER_PLUGINS, "").orEmpty()
 
@@ -111,6 +121,8 @@ class SettingsStore(context: Context) {
         const val KEY_ROOT_CONTROL_ENABLED = "root_control_enabled"
         const val KEY_PLUGIN_PREFIX = "plugin_"
         const val KEY_USER_PLUGINS = "user_plugins"
+        const val KEY_WEB_SEARCH_MODE = "web_search_mode"
+        const val KEY_REASONING_EFFORT = "reasoning_effort"
         const val KEY_MCP_ENABLED = "mcp_enabled"
         const val KEY_MCP_PORT = "mcp_port"
         const val KEY_CALL_ROLE_ID = "call_role_id"

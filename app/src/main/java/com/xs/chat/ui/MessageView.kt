@@ -1,5 +1,9 @@
 package com.xs.chat.ui
 
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
@@ -19,11 +23,14 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,12 +52,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.xs.chat.R
 import com.xs.chat.data.Attachment
 import com.xs.chat.data.CallMeta
 import com.xs.chat.data.ChatMessage
 import com.xs.chat.data.Role
+import com.xs.chat.data.SearchReference
 import com.xs.chat.plugins.WebSearchPlugin
 
 /** 消息竖三点菜单项。 */
@@ -195,6 +204,41 @@ fun AssistantMessageView(
             )
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
+                // 联网搜索状态胶囊（元宝同款）：「正在全网搜索… / 已找到 N 篇相关内容」
+                message.searchMeta?.let { meta ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Icon(
+                                Icons.Rounded.Public,
+                                contentDescription = null,
+                                tint = primary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                meta,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = primary,
+                                maxLines = 2
+                            )
+                            if (isStreaming) {
+                                Spacer(Modifier.width(6.dp))
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(10.dp),
+                                    strokeWidth = 1.5.dp,
+                                    color = primary
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 // 长按选中文字并就地弹出复制菜单
                 SelectionContainer {
                     MarkdownText(
@@ -280,6 +324,86 @@ fun AssistantMessageView(
                                 MsgAction.DELETE -> onDelete()
                             }
                         }
+                    )
+                }
+                if (!message.references.isNullOrEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    SearchReferencesCard(message.references.orEmpty())
+                }
+            }
+        }
+    }
+}
+
+/** 联网搜索参考资料（元宝同款）：编号 [N] + 标题 + 域名，点击打开原文。 */
+@Composable
+private fun SearchReferencesCard(references: List<SearchReference>) {
+    val context = LocalContext.current
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            "参考资料",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+        ) {
+            references.forEachIndexed { i, ref ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val uri = ref.url.trim()
+                            if (uri.startsWith("http")) {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
+                                }
+                            }
+                        }
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "[${i + 1}]",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            ref.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (ref.domain.isNotBlank()) {
+                            Spacer(Modifier.height(1.dp))
+                            Text(
+                                ref.domain,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Icon(
+                        Icons.Rounded.OpenInNew,
+                        contentDescription = "打开",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                if (i != references.lastIndex) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                 }
             }

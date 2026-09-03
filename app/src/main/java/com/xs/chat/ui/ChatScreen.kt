@@ -71,7 +71,10 @@ import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Movie
+import androidx.compose.material.icons.rounded.Public
+import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.SelectAll
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Stop
@@ -118,6 +121,7 @@ import com.xs.chat.data.AttachmentStore
 import com.xs.chat.data.pickVisionModel
 import com.xs.chat.data.PickedAttachment
 import com.xs.chat.plugins.MemoryPlugin
+import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.data.Role
 import com.offlinevoice.input.VoskEngine
 import kotlinx.coroutines.launch
@@ -328,6 +332,8 @@ fun ChatScreen(
                         onPluginImage = { text -> pluginKind = PluginKind.IMAGE_GEN; pluginDraft = text },
                         onPluginVideo = { text -> pluginKind = PluginKind.VIDEO_GEN; pluginDraft = text },
                         onPluginFile = { text -> pluginKind = PluginKind.FILE_EDIT; pluginDraft = text },
+                        onWebSearchModeChange = { mode -> vm.setWebSearchMode(mode) },
+                        onReasoningChange = { effort -> vm.setReasoningEffort(effort) },
                         onVoiceCall = {
                             pendingCall = 0
                             callLauncher.launch(arrayOf(Manifest.permission.RECORD_AUDIO))
@@ -725,6 +731,8 @@ private fun ChatInputBar(
     onPluginImage: (String) -> Unit,
     onPluginVideo: (String) -> Unit,
     onPluginFile: (String) -> Unit,
+    onWebSearchModeChange: (Int) -> Unit,
+    onReasoningChange: (String) -> Unit,
     onVoiceCall: () -> Unit,
     onVideoCall: () -> Unit
 ) {
@@ -781,6 +789,17 @@ private fun ChatInputBar(
                     state.pendingAttachments.forEach { a ->
                         PendingAttachmentChip(attachment = a, onRemove = { onRemoveAttachment(a.id) })
                     }
+                }
+            }
+            // 输入栏胶囊行（Codex 同款）：思考深度 + 联网搜索
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(bottom = 6.dp)
+            ) {
+                ReasoningEffortPill(effort = state.reasoningEffort, onChange = onReasoningChange)
+                if (state.enabledPlugins.contains("web_search")) {
+                    WebSearchModePill(mode = state.webSearchMode, onChange = onWebSearchModeChange)
                 }
             }
             if (micRecording) {
@@ -1167,5 +1186,122 @@ private fun JumpToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifie
             tint = primary,
             modifier = Modifier.size(15.dp)
         )
+    }
+}
+
+/** 输入栏「联网搜索」状态胶囊（元宝同款）：点开切换 自动 / 总是开启 / 关闭。 */
+@Composable
+private fun WebSearchModePill(mode: Int, onChange: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val active = mode != 0
+    val color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    val label = when (mode) {
+        2 -> "总是开启"
+        1 -> "自动"
+        else -> "未开启"
+    }
+    Box {
+        Surface(
+            onClick = { open = true },
+            shape = RoundedCornerShape(50),
+            color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.Public,
+                    contentDescription = "联网搜索",
+                    tint = color,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    "联网搜索",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = color
+                )
+                Spacer(Modifier.width(2.dp))
+                Text(
+                    "· $label",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = color
+                )
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf(
+                WebSearchModeOption("自动（智能判断是否需要联网）", WebSearchPlugin.MODE_AUTO),
+                WebSearchModeOption("总是开启（每次提问都搜索）", WebSearchPlugin.MODE_ALWAYS),
+                WebSearchModeOption("关闭（不联网搜索）", WebSearchPlugin.MODE_OFF)
+            ).forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option.label) },
+                    trailingIcon = if (mode == option.mode) {
+                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                    } else null,
+                    onClick = { open = false; onChange(option.mode) }
+                )
+            }
+        }
+    }
+}
+
+/** 菜单选项：模式 + 文案。 */
+private data class WebSearchModeOption(val label: String, val mode: Int)
+
+/** 输入栏「思考深度」胶囊（Codex 同款）：自动 / 低 / 中 / 高 / 极高，低中高映射为 reasoning_effort。 */
+@Composable
+private fun ReasoningEffortPill(effort: String, onChange: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    val auto = effort == "auto" || effort.isBlank()
+    val label = when (effort) {
+        "low" -> "低"
+        "medium" -> "中"
+        "high" -> "高"
+        "xhigh" -> "极高"
+        else -> "自动"
+    }
+    val color = if (auto) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+    Box {
+        Surface(
+            onClick = { open = true },
+            shape = RoundedCornerShape(50),
+            color = if (auto) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+            ) {
+                Icon(
+                    Icons.Rounded.Psychology,
+                    contentDescription = "思考深度",
+                    tint = color,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("思考深度", style = MaterialTheme.typography.labelMedium, color = color)
+                Spacer(Modifier.width(2.dp))
+                Text("· $label", style = MaterialTheme.typography.labelMedium, color = color)
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            listOf(
+                "auto" to "自动（由模型默认，不额外传参）",
+                "low" to "低（响应最快，思考最少）",
+                "medium" to "中（均衡）",
+                "high" to "高（深入思考）",
+                "xhigh" to "极高（最深入，耗时最长）"
+            ).forEach { (value, text) ->
+                DropdownMenuItem(
+                    text = { Text(text) },
+                    trailingIcon = if (effort == value) {
+                        { Icon(Icons.Rounded.Check, contentDescription = null) }
+                    } else null,
+                    onClick = { open = false; onChange(value) }
+                )
+            }
+        }
     }
 }

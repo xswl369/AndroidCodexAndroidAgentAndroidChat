@@ -63,6 +63,7 @@ class OpenAiApi(
         messages: List<ChatMessage>,
         systemPrompt: String?,
         temperature: Float,
+        reasoningEffort: String? = null,
         attachmentParts: Map<String, List<ContentPart>> = emptyMap(),
         onDelta: (String) -> Unit,
         onUsage: ((Usage) -> Unit)? = null
@@ -78,6 +79,7 @@ class OpenAiApi(
             req.addProperty("model", model)
             req.addProperty("stream", true)
             req.addProperty("temperature", temperature)
+            addReasoningEffort(req, reasoningEffort)
             val streamOpts = JsonObject()
             streamOpts.addProperty("include_usage", true)
             req.add("stream_options", streamOpts)
@@ -331,6 +333,14 @@ class OpenAiApi(
         putStr(36, "data")
         putInt(40, pcm.size)
         return header + pcm
+    }
+
+    /** Codex 同款思考深度：low/medium/high/xhigh 映射为 reasoning_effort 参数；auto/关闭 不传，兼容不支持该参数的模型。 */
+    private fun addReasoningEffort(req: JsonObject, effort: String?) {
+        val value = effort?.lowercase()?.trim()
+        if (value in setOf("low", "medium", "high", "xhigh")) {
+            req.addProperty("reasoning_effort", value)
+        }
     }
 
     private fun jsonMessage(role: String, content: String): JsonObject =
