@@ -12,10 +12,7 @@ import kotlinx.coroutines.withContext
  * 换行符风格 / BOM / 尾部换行）。
  */
 object FileEditPlugin {
-    private const val MAX_FILE_CHARS = 200_000
-
     suspend fun edit(model: AiModel, instruction: String, fileName: String, content: String, onUsage: ((Usage) -> Unit)? = null): String {
-        if (content.length > MAX_FILE_CHARS) throw RuntimeException("文件过大，仅支持 200KB 以内文本")
         return withContext(Dispatchers.IO) {
             val api = OpenAiApi(model.baseUrl, model.apiKey, readTimeoutMs = 120_000)
             val system = "你是文件编辑助手。用户给出文件名、当前内容与修改要求。直接输出修改后的完整文件内容：" +

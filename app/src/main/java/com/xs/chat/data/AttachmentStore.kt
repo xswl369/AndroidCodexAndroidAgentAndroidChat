@@ -19,8 +19,8 @@ import java.io.FileOutputStream
  */
 object AttachmentStore {
     private const val MAX_IMAGE_CHAT_BYTES = 8 * 1024 * 1024
-    private const val MAX_VIDEO_CHAT_BYTES = 25 * 1024 * 1024
-    private const val MAX_TEXT_INLINE_BYTES = 300_000
+    private const val MAX_VIDEO_CHAT_BYTES = 25L * 1024 * 1024
+    private const val MAX_TEXT_INLINE_BYTES = 300_000L
 
     /** 拷贝选定附件到 filesDir/attachments，返回可持久化的 Attachment；失败返回 null。 */
     fun importToLocal(context: Context, picked: PickedAttachment): Attachment? {
@@ -46,17 +46,18 @@ object AttachmentStore {
         }.getOrNull()
     }
 
-    fun readBytes(context: Context, attachment: Attachment): ByteArray? {
+    /** 读取附件字节；maxBytes 用于普通聊天附件的发送上限，传 Long.MAX_VALUE 即不限制。 */
+    fun readBytes(context: Context, attachment: Attachment, maxBytes: Long = MAX_VIDEO_CHAT_BYTES): ByteArray? {
         return runCatching {
             val uri = Uri.parse(attachment.uri)
             if ("file".equals(uri.scheme, ignoreCase = true)) {
                 val f = File(uri.path ?: return null)
-                if (f.length() > MAX_VIDEO_CHAT_BYTES) return null
+                if (f.length() > maxBytes) return null
                 f.readBytes()
             } else {
                 val len = context.contentResolver.query(uri, null, null, null, null)?.use { c ->
                     val i = c.getColumnIndex(OpenableColumns.SIZE)
-                    if (i >= 0 && c.getLong(i) > MAX_VIDEO_CHAT_BYTES) null else 1L
+                    if (i >= 0 && c.getLong(i) > maxBytes) null else 1L
                 }
                 if (len == null) return null
                 context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -64,10 +65,10 @@ object AttachmentStore {
         }.getOrNull()
     }
 
-    /** 可内联为文本的附件才返回内容；否则 null。 */
-    fun readText(context: Context, attachment: Attachment): String? {
-        val bytes = readBytes(context, attachment) ?: return null
-        if (bytes.size > MAX_TEXT_INLINE_BYTES) return null
+    /** 可内联为文本的附件才返回内容；否则 null。maxBytes 用于控制内联文本上限，不限大小传 Long.MAX_VALUE。 */
+    fun readText(context: Context, attachment: Attachment, maxBytes: Long = MAX_TEXT_INLINE_BYTES): String? {
+        val bytes = readBytes(context, attachment, maxBytes) ?: return null
+        if (bytes.size > maxBytes) return null
         val isText = attachment.mimeType.startsWith("text/")
                 || TEXT_EXTS.any { attachment.name.endsWith(it, ignoreCase = true) }
         if (!isText) return null

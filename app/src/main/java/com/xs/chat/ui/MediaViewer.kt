@@ -75,7 +75,7 @@ fun MediaViewerDialog(attachment: Attachment, onDismiss: () -> Unit) {
     }
 }
 
-/** 文本文件查看：应用内滚动展示内容（最多 200KB），点击保存可导出到下载目录。 */
+/** 文本文件查看：应用内滚动展示全部内容，点击保存可导出到下载目录。 */
 @Composable
 private fun TextFileViewer(uri: String) {
     val context = LocalContext.current
@@ -84,8 +84,6 @@ private fun TextFileViewer(uri: String) {
             runCatching {
                 val f = File(Uri.parse(uri).path ?: return@runCatching "文件不存在")
                 if (!f.exists()) "文件不存在"
-                else if (f.length() > 200 * 1024) "文件超过 200KB，仅展示前 200KB\n\n" +
-                    f.readBytes().copyOf(200 * 1024).toString(Charsets.UTF_8)
                 else f.readText(Charsets.UTF_8)
             }.getOrDefault("读取失败")
         }

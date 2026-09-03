@@ -802,7 +802,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val sim = launchSimulatedProgress(assistantId, AtomicBoolean(false), capPct = 90, pctPerSecond = 2f)
             try {
                 val refBytes = withContext(Dispatchers.IO) {
-                    refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it) }
+                    refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it, maxBytes = Long.MAX_VALUE) }
                 }
                 val attach = ImagePlugin.generate(app, model, clean, refBytes, _ui.value.imageSize)
                 sim.cancel()
@@ -845,7 +845,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val sim = launchSimulatedProgress(assistantId, realProgressSeen, capPct = 40, pctPerSecond = 0.9f)
             try {
                 val frame = withContext(Dispatchers.IO) {
-                    refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it) }
+                    refs.firstOrNull()?.let { AttachmentStore.readBytes(app, it, maxBytes = Long.MAX_VALUE) }
                 }
                 val seconds = _ui.value.videoDuration.toIntOrNull() ?: 5
                 val attach = VideoPlugin.generate(
@@ -900,8 +900,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             _ui.update { it.copy(isStreaming = true) }
             try {
                 val target = refs.first()
-                val content = withContext(Dispatchers.IO) { AttachmentStore.readText(app, target) }
-                    ?: throw RuntimeException("附件不是可读文本或超过 300KB")
+                val content = withContext(Dispatchers.IO) { AttachmentStore.readText(app, target, maxBytes = Long.MAX_VALUE) }
+                    ?: throw RuntimeException("附件不是文本文件，无法用 AI 修改")
                 val edited = withContext(Dispatchers.IO) {
                     var u: Usage? = null
                     val text = FileEditPlugin.edit(model, clean, target.name, content, onUsage = { u = it })
@@ -1494,7 +1494,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun resolvePart(app: android.app.Application, a: Attachment): ContentPart? {
-        val bytes = AttachmentStore.readBytes(app, a) ?: run {
+        val bytes = AttachmentStore.readBytes(app, a, maxBytes = Long.MAX_VALUE) ?: run {
             notice("附件 ${a.name} 读取失败，已跳过")
             return null
         }
@@ -1508,7 +1508,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 dataUrl = "data:${a.mimeType.ifBlank { "video/mp4" }};base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
             )
             AttachmentKind.FILE -> {
-                val text = AttachmentStore.readText(app, a)
+                val text = AttachmentStore.readText(app, a, maxBytes = Long.MAX_VALUE)
                 if (text != null) ContentPart(type = "text", text = "\n[附件：${a.name}]\n$text")
                 else ContentPart(
                     type = "file",
@@ -1537,6 +1537,4 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         super.onCleared()
     }
 }
-
-
 
