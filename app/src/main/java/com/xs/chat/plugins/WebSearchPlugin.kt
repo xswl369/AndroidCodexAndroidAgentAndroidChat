@@ -1,5 +1,6 @@
 package com.xs.chat.plugins
 
+import android.util.Log
 import com.xs.chat.data.SearchReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +24,8 @@ private typealias SearchEngine = (String) -> List<SearchReference>?
  */
 object WebSearchPlugin {
 
+    private const val TAG = "WebSearchPlugin"
+
     /** 联网搜索模式（元宝同款三态）。 */
     const val MODE_OFF = 0
     const val MODE_AUTO = 1
@@ -39,11 +42,17 @@ object WebSearchPlugin {
     suspend fun search(query: String): SearchOutcome? = withContext(Dispatchers.IO) {
         val q = query.trim()
         if (q.isEmpty()) return@withContext null
-        val engines = listOf<SearchEngine>(::searchSogou, ::searchBingRss, ::searchBaidu, ::searchDuckDuckGo)
-        for (engine in engines) {
+        val engines = listOf(
+            "Sogou" to ::searchSogou, "Bing" to ::searchBingRss,
+            "Baidu" to ::searchBaidu, "DuckDuckGo" to ::searchDuckDuckGo
+        )
+        val failures = mutableListOf<String>()
+        for ((name, engine) in engines) {
             val refs = runCatching { engine(q) }.getOrNull()
             if (!refs.isNullOrEmpty()) return@withContext SearchOutcome(format(query, refs), refs)
+            failures.add(name)
         }
+        Log.w(TAG, "all engines failed: ${failures.joinToString(" / ")} query=$q")
         null
     }
 
@@ -57,7 +66,7 @@ object WebSearchPlugin {
         for (m in h3Re.findAll(html)) {
             if (hits.size >= MAX_RESULTS) break
             val block = m.groupValues[1]
-            val a = Regex(""""<a[^>]*class="?resultLink"?[^>]*href="([^"]+)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+            val a = Regex("<a[^>]*class=\"?resultLink\"?[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", RegexOption.DOT_MATCHES_ALL)
                 .find(block) ?: continue
             val target = sogouTarget(a.groupValues[1]) ?: continue
             val title = stripHtml(a.groupValues[2]).trim()
@@ -173,6 +182,8 @@ object WebSearchPlugin {
     /** 抓取正文：剥离 script/style/nav/footer 等噪声后取前 220 字（3s 超时，失败静默）。 */
     private fun fetchBody(url: String): String? {
         if (!url.startsWith("http")) return null
+        // 搜索引擎跳转链接（百度 /link?url=、搜狗 /link）实为重定向页，抓正文无意义，直接跳过
+        if (url.contains("/link?url=")) return null
         val html = httpGet(url, 3_000) ?: return null
         if (html.length > 200_000) return null
         val text = stripHtml(

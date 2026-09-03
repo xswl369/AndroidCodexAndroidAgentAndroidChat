@@ -1673,7 +1673,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 组装 system prompt：用户自定义提示词 + 联网搜索结果控制提示词（元宝联网回复策略）。 */
     private fun buildSystemPrompt(searchResult: String?): String? {
-        val base = _ui.value.systemPrompt.ifBlank { null }
+        val base = listOfNotNull(
+            _ui.value.systemPrompt.ifBlank { null },
+            buildCapabilityNote()
+        ).joinToString("\n\n").ifBlank { null }
         if (searchResult.isNullOrBlank()) return base
         val control = """
             以下是针对你问题的实时联网搜索结果（每条以 [来源N] 开头）：
@@ -1690,6 +1693,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             5. 不要在回答末尾手动列出网址或参考文献（界面会自动展示参考资料），直接结束正文；禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
         """.trimIndent()
         return if (base == null) control else "$base\n\n$control"
+    }
+
+    /**
+     * 应用自身实时联网能力声明（根因修复：模型不知道本 App 已内置联网搜索，
+     * 被问「能不能实时联网/能联网吗」时只会凭知识回答“不能”）。
+     * 联网开关开启时注入 system prompt，保证能力类提问一律如实回答“可以”。
+     */
+    private fun buildCapabilityNote(): String? {
+        if (!_ui.value.enabledPlugins.contains("web_search")) return null
+        val modeDesc = when (_ui.value.webSearchMode) {
+            WebSearchPlugin.MODE_ALWAYS -> "总是开启，每次提问都会先进行全网实时搜索"
+            WebSearchPlugin.MODE_AUTO -> "自动模式，事实型/时效性问题会自动进行全网实时搜索"
+            else -> return null
+        }
+        return "【本 App 能力声明】你在 XS Chat 中使用，当前已开启实时联网搜索：$modeDesc，" +
+            "AI 能获取最新实时信息并参考资料回答（回答中带 [N] 编号引用）。" +
+            "当用户询问“能不能实时联网”“可以联网吗”“支持联网搜索吗”等关于本 App 能力的问题时，" +
+            "必须如实回答：可以实时联网，并简单说明当前的联网模式；禁止回答“无法联网”或“信息截止于训练时间”之类的否定话术。"
     }
 
     /** 读取指定 assistant 消息当前完整内容（流式过程）。 */
