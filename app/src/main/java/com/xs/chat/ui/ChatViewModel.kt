@@ -54,6 +54,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -113,6 +114,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var api: OpenAiApi? = null
     private var pendingId: String? = null
     private var pluginJob: Job? = null
+    /** 设备意图云端二次确认任务（候选阶段防并发重入）。 */
+    private var intentCheckJob: Job? = null
 
     init {
         refreshModels()
@@ -543,6 +546,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val pending = _ui.value.pendingAttachments
         if (content.isEmpty() && pending.isEmpty()) return
         if (_ui.value.isStreaming) return
+        if (intentCheckJob?.isActive == true) {
+            _ui.update { it.copy(notice = "正在判断指令意图，请稍候…") }
+            return
+        }
         val model = _ui.value.activeModel
         if (model == null) {
             _ui.update { it.copy(notice = "请先添加并选择模型（设置 → 添加模型 / 加载模型）") }
@@ -560,8 +567,32 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 显式联网搜索指令优先：说「搜/查一下…」必联网（元宝同款）
         if (webSearchIntent(content, explicitOnly = true)) return
 
-        // 设备控制意图：命中则直接操控手机（类 Codex 电脑版控制）
-        if (deviceControlIntent(content)) return
+        // 设备控制意图：两段式——本地词表快判 + 云端小模型兜底（避免换个说法就漏判/误判）
+        when (deviceIntentVerdict(content)) {
+            IntentVerdict.DEVICE -> {
+                _ui.update { it.copy(pendingAttachments = emptyList()) }
+                runDeviceControl(content)
+                return
+            }
+            IntentVerdict.CANDIDATE -> {
+                _ui.update { it.copy(notice = "正在判断指令意图…") }
+                intentCheckJob = viewModelScope.launch {
+                    try {
+                        if (cloudConfirmDevice(content)) {
+                            _ui.update { it.copy(pendingAttachments = emptyList()) }
+                            runDeviceControl(content)
+                        } else {
+                            startChatFlow(content)
+                        }
+                    } finally {
+                        intentCheckJob = null
+                        _ui.update { it.copy(notice = null) }
+                    }
+                }
+                return
+            }
+            IntentVerdict.NONE -> {}
+        }
 
         // 媒体生成意图优先接管：命中则直接调生图/生视频插件，避免 AI 只回复提示词
         if (mediaGenIntent(content, pending)) return
@@ -572,6 +603,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // 内置联网搜索（元宝同款）：按当前模式自动/总是开启触发
         if (webSearchIntent(content, explicitOnly = false)) return
 
+        startChatFlow(content)
+    }
+
+    /** 常规聊天流：将消息加入会话并流式回答（设备意图候选判定为聊天后也走这里）。 */
+    private fun startChatFlow(content: String) {
+        val model = _ui.value.activeModel ?: return
+        val pending = _ui.value.pendingAttachments
         val isNew = conversationId == null
         val id = conversationId ?: UUID.randomUUID().toString()
         conversationId = id
@@ -639,6 +677,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun stop() {
         api?.cancel()
+        intentCheckJob?.cancel()
         streamingJob?.cancel()
         streamingJob = null
         pluginJob?.cancel()
@@ -1457,28 +1496,68 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 输入框消息自动识别设备控制意图：本地轻量意图模型实时判断，命中且达置信度才接管。 */
-    private fun deviceControlIntent(content: String): Boolean {
-        if (!_ui.value.enabledPlugins.contains("device_control")) return false
+    private enum class IntentVerdict { DEVICE, CANDIDATE, NONE }
+
+    /** 设备控制意图两段式判定：本地词表快决；词表认定聊天但存在设备弱信号 → 交云端小模型二次确认。 */
+    private fun deviceIntentVerdict(content: String): IntentVerdict {
+        if (!_ui.value.enabledPlugins.contains("device_control")) return IntentVerdict.NONE
         val lower = content.lowercase(Locale.ROOT)
         // 疑问句一律放行（“怎么打开开发者模式”是提问不是指令）
         val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
             || lower.trimEnd().endsWith("?") || lower.trimEnd().endsWith("？") || lower.trimEnd().endsWith("吗")
-        if (question) return false
-        // 本地意图模型：强聊天信号（解释/写作/求助/语气词）一律放行
+        if (question) return IntentVerdict.NONE
         val (kind, score) = LocalIntentClassifier.classify(content)
-        if (kind == LocalIntentClassifier.Intent.CHAT) return false
-        val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
-        val modelTrigger = kind == LocalIntentClassifier.Intent.DEVICE_CONTROL &&
-            score >= LocalIntentClassifier.DEVICE_MIN_SCORE
-        // 复合指令索引（“打开抖音搜索华为手机并点进第一个视频”等）作为补充信号
-        val idxTrigger = !question && AppIndexPlugin.isDeviceCommand(getApplication(), lower)
-        if (openTrigger || modelTrigger || idxTrigger) {
-            _ui.update { it.copy(pendingAttachments = emptyList()) }
-            runDeviceControl(content)
-            return true
+        if (kind != LocalIntentClassifier.Intent.CHAT) {
+            val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
+            val modelTrigger = kind == LocalIntentClassifier.Intent.DEVICE_CONTROL &&
+                score >= LocalIntentClassifier.DEVICE_MIN_SCORE
+            // 复合指令索引（“打开抖音搜索华为手机并点进第一个视频”等）作为补充信号
+            val idxTrigger = AppIndexPlugin.isDeviceCommand(getApplication(), lower)
+            if (openTrigger || modelTrigger || idxTrigger) return IntentVerdict.DEVICE
         }
-        return false
+        // 词表够不着但带设备域弱信号（亮度/屏幕/打开…）：让云端小模型兜底，换种说法也能识别
+        return if (LocalIntentClassifier.hasDeviceSignal(lower)) IntentVerdict.CANDIDATE else IntentVerdict.NONE
+    }
+
+    /** 云端小模型兜底：只输出单一意图标签；超时/失败一律按聊天放行，绝不误抢。 */
+    private suspend fun cloudConfirmDevice(content: String): Boolean {
+        val model = _ui.value.activeModel ?: return false
+        val reply: String = withTimeoutOrNull(4500) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val api = OpenAiApi(model.baseUrl, model.apiKey, connectTimeoutMs = 2500, readTimeoutMs = 3000)
+                    runCatching {
+                        api.completeChat(model.modelId, INTENT_CHECK_SYSTEM, listOf("user" to content), 0f)
+                    }.getOrElse {
+                        // 部分网关对 stream=false 路由异常时回退流式聚合
+                        val sb = StringBuilder()
+                        api.streamChat(
+                            model.modelId,
+                            listOf(ChatMessage(role = Role.USER, content = content)),
+                            INTENT_CHECK_SYSTEM, 0f,
+                            onDelta = { sb.append(it) }
+                        )
+                        sb.toString()
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w(TAG, "intent cloud confirm failed", e)
+                    ""
+                }
+            }
+        } ?: return false
+        if (reply.isBlank()) return false
+        val isDevice = isDeviceIntentToken(reply)
+        MemoryPlugin.log(getApplication(), "意图二次确认", "${content.take(30)} -> ${if (isDevice) "device" else "chat"}")
+        return isDevice
+    }
+
+    private fun isDeviceIntentToken(reply: String): Boolean {
+        val first = reply.trim().lowercase(Locale.ROOT)
+            .split(Regex("""[\s,，:;；.。!！?？]+"""))
+            .firstOrNull { it.isNotBlank() }.orEmpty()
+        return first.contains("device") || first.contains("设备")
     }
 
     fun runDeviceControl(instruction: String) {
@@ -1535,6 +1614,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     companion object {
         private const val TAG = "ChatViewModel"
+
+        /** 云端小模型意图判定 System Prompt：只允许输出一个英文意图标签。 */
+        private const val INTENT_CHECK_SYSTEM =
+            "你是手机助手「XS Chat」的指令意图分类器。用户输入一句话，只判断它是要直接操控这台手机/平板设备的系统操作（如" +
+                "打开/切换/关闭应用、点击、滑动、调亮度音量、锁屏、通知、截图、设闹钟等），还是要和 AI 聊天提问或闲聊。" +
+                "只输出一个英文单词：设备操作输出 device，聊天提问输出 chat。不要输出任何其他内容，不要解释。"
 
         /** 单次请求最多发送的消息条数（含最新一条），超出部分裁剪以加快响应。 */
         private const val MAX_CONTEXT_MESSAGES = 24

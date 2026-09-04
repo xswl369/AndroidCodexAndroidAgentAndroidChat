@@ -4,9 +4,9 @@ import java.util.Locale
 
 /**
  * 本地轻量意图分类模型（离线、毫秒级）：
- * 按类别词表加权打分，识别用户输入意图，避免「设备控制」动不动就截胡普通聊天。
- * 聊天倾向词（疑问/解释/讨论/写作等）命中即归 CHAT，其次取得分最高的类别。
- * 设备控制要求置信度 ≥ DEVICE_MIN_SCORE（约 1 个强词）。
+ * 按类别词表加权打分；聊天倾向词（疑问/解释/讨论/写作等）命中即归 CHAT，其次取得分最高的类别。
+ * 设备控制要求置信度 ≥ DEVICE_MIN_SCORE（约 1 个强词）才直接接管；
+ * 词表没把握但带设备域弱信号时，由上层交给云端小模型二次确认（hasDeviceSignal）。
  */
 object LocalIntentClassifier {
 
@@ -61,12 +61,37 @@ object LocalIntentClassifier {
         "吗", "呢", "吧", "几个", "些"
     )
 
-    /** 分类：返回 (意图, 置信度)。置信度仅对 DEVICE_CONTROL 有意义。 */
-    fun classify(text: String): Pair<Intent, Float> {
-        // 统一空白与标点（保留单个空格，供英文词组匹配）
-        val t = text.trim().lowercase(Locale.ROOT)
+    /** 设备域弱信号：仅用于判断「是否需要云端小模型二次确认」，命中 ≠ 设备指令。 */
+    private val DEVICE_SIGNAL_WORDS = listOf(
+        "屏幕", "亮度", "调亮", "调暗", "调低", "调高", "变亮", "变暗",
+        "音量", "声音", "调小", "调大", "静音", "免提", "震动", "振动", "飞行模式", "蓝牙", "wifi", "wi-fi",
+        "打开", "关闭", "开启", "启动", "退出", "点击", "点一下", "点开", "滑动",
+        "上滑", "下滑", "左滑", "右滑", "长按", "双击", "设置", "锁屏", "熄屏", "解锁", "亮屏",
+        "桌面", "主页", "返回", "通知栏", "状态栏", "悬浮窗", "后台",
+        "截图", "录屏", "分屏", "横屏", "竖屏", "深色模式", "夜间模式", "字体",
+        "应用", "软件", "微信", "qq", "抖音", "快手", "淘宝", "京东", "相机", "相册",
+        "浏览器", "闹钟", "计时器", "日历", "手电筒", "重启", "关机", "安装", "卸载",
+        "数据", "流量", "热点", "存储", "清理", "省电", "充电", "定位",
+        "brightness", "volume", "bluetooth", "wifi", "screen", "settings",
+        "screenshot", "lock", "unlock", "home", "back", "tap", "click",
+        "scroll", "swipe", "open", "close", "launch", "open app"
+    )
+
+    /** 是否带设备域弱信号（供云端小模型兜底触发判断）。 */
+    fun hasDeviceSignal(text: String): Boolean {
+        val t = normalize(text)
+        return DEVICE_SIGNAL_WORDS.any { t.contains(it) }
+    }
+
+    private fun normalize(text: String): String {
+        return text.trim().lowercase(Locale.ROOT)
             .replace(Regex("""[\s,，.。!！?？;；:："']+"""), " ")
             .trim()
+    }
+
+    /** 分类：返回 (意图, 置信度)。置信度仅对 DEVICE_CONTROL 有意义。 */
+    fun classify(text: String): Pair<Intent, Float> {
+        val t = normalize(text)
         if (t.isEmpty()) return Intent.CHAT to 0f
         if (CHAT_WORDS.any { t.contains(it) }) return Intent.CHAT to 0f
         var best = Intent.CHAT
