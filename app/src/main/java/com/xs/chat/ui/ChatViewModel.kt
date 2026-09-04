@@ -550,6 +550,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
 
+        // 内置验证命令（自动化/ADB 可测，不依赖模型）：check news / check lunar / check huangli / check search <词>
+        if (content.startsWith("check ", ignoreCase = true)) {
+            runSelfCheck(content.substringAfter(' ').trim())
+            return
+        }
+
         // 显式联网搜索指令优先：说「搜/查一下…」必联网（元宝同款）
         if (webSearchIntent(content, explicitOnly = true)) return
 
@@ -1190,6 +1196,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return "$prevUser $text" to false
         }
         return text to false
+    }
+
+    /**
+     * 联网搜索主流程（元宝同款）：气泡顶部先出「正在全网搜索…」状态，
+     * 搜索完成后变为「已找到 N 篇相关内容，正在生成回答…」，
+     * 结果注入 AI 控制提示词，由 AI 流式整理回答并标注 [N] 引用，回答下方渲染参考资料卡片。
+     */
+    private fun runSelfCheck(kind: String) {
+        if (_ui.value.isStreaming) return
+        pluginJob = viewModelScope.launch {
+            val assistantId = beginPluginWork("自检 check $kind", emptyList())
+            val out = try {
+                withContext(Dispatchers.IO) { WebSearchPlugin.selfCheck(kind) }
+            } catch (e: Exception) {
+                "❌ 自检异常：${e::class.simpleName}: ${e.message}"
+            }
+            completeAssistant(assistantId, out, emptyList())
+            finishPluginWork()
+        }
     }
 
     /**

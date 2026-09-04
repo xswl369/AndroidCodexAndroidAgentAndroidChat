@@ -37,6 +37,8 @@ object WebSearchPlugin {
     private const val MAX_RESULTS = 5
     /** 只对前 2 条结果抓取正文（单条 3s 超时），避免串行抓取拖慢整体搜索。 */
     private const val BODY_FETCH_LIMIT = 2
+    private const val MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; xs-chat) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+    private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     /** 一次完整搜索结果：text 供模型分析，refs 供 UI 渲染参考资料。 */
     data class SearchOutcome(val text: String, val refs: List<SearchReference>)
@@ -198,12 +200,12 @@ object WebSearchPlugin {
 
     private fun encode(s: String): String = URLEncoder.encode(s, "UTF-8")
 
-    private fun httpGet(urlStr: String, timeoutMs: Int = TIMEOUT_MS): String? {
+    private fun httpGet(urlStr: String, timeoutMs: Int = TIMEOUT_MS, ua: String = MOBILE_UA): String? {
         return try {
             val conn = URL(urlStr).openConnection() as HttpURLConnection
             conn.connectTimeout = timeoutMs
             conn.readTimeout = timeoutMs
-            conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13; xs-chat) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
+            conn.setRequestProperty("User-Agent", ua)
             conn.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9")
             conn.setRequestProperty("Accept", "application/rss+xml;q=0.9, application/xml;q=0.8, text/html;q=0.7, */*;q=0.5")
             if (conn.responseCode !in 200..299) return null
@@ -400,7 +402,8 @@ object WebSearchPlugin {
 
     /** 黄历（今日宜忌）：抓取 huangli.com 在线数据，失败返回 null。 */
     private fun huangliOutcome(): SearchOutcome? {
-        val html = httpGet("https://www.huangli.com/", 6_000) ?: return null
+        // 移动 UA 会被重定向成精简版页面（缺宜/忌/干支），必须用桌面版拿完整版
+        val html = httpGet("https://www.huangli.com/", 6_000, DESKTOP_UA) ?: return null
         val gz = Regex("""class="gz">([^<]+)</span>""").findAll(html).map { it.groupValues[1] }.toList()
         val zodiac = Regex("""class="zodiac">([^<]+)</span>""").findAll(html).map { it.groupValues[1] }.toList()
         val nayin = Regex("""class="nayin">([^<]+)</span>""").findAll(html).map { it.groupValues[1] }.toList()
@@ -418,7 +421,7 @@ object WebSearchPlugin {
             for (i in 0..2) {
                 if (i > 0) sb.append("  ")
                 sb.append(gz[i])
-                if (i < zodiac.size) sb.append("（属").append(zodiac[i]).append("）")
+                if (i < zodiac.size) sb.append("（").append(zodiac[i]).append("）")
                 if (i < nayin.size) sb.append("·").append(nayin[i])
                 sb.append(if (i == 0) "年" else if (i == 1) "月" else "日")
             }
@@ -458,5 +461,39 @@ object WebSearchPlugin {
             if (r.snippet.isNotBlank()) sb.append("：").append(r.snippet)
         }
         return SearchOutcome(sb.toString(), refs)
+    }
+
+    /** 自检（验证内置查询，供自动化/ADB）：check news / check lunar / check huangli / check search <关键词> */
+    suspend fun selfCheck(kind: String): String = withContext(Dispatchers.IO) {
+        val t0 = System.currentTimeMillis()
+        val k = kind.lowercase(Locale.ROOT)
+        val result = when {
+            k in setOf("news", "rd", "people", "热点") -> {
+                val r = peopleDailyOutcome()
+                if (r == null) "❌ news：人民网 RSS 获取失败（网络不可达或超时）"
+                else "✅ 人民网新闻 ${r.refs.size} 条\n" + r.text
+            }
+            k in setOf("lunar", "农历") -> {
+                val r = lunarOutcome("农历今天")
+                if (r == null) "❌ lunar 农历计算失败"
+                else "✅ " + r.text
+            }
+            k in setOf("huangli", "黄历") -> {
+                val r = huangliOutcome()
+                if (r == null) "❌ 黄历在线抓取失败（网络不可达或超时）"
+                else "✅ " + r.text
+            }
+            k.startsWith("search") -> {
+                val q = k.removePrefix("search").trim()
+                if (q.isEmpty()) "用法：check search <关键词>"
+                else {
+                    val r = search(q)
+                    if (r == null) "❌ 搜索无结果（全部引擎失败）"
+                    else "✅ 搜索命中 ${r.refs.size} 条\n" + r.text.take(400)
+                }
+            }
+            else -> "用法：check news / check lunar / check huangli / check search <关键词>"
+        }
+        result + "\n⏱ ${System.currentTimeMillis() - t0}ms"
     }
 }
