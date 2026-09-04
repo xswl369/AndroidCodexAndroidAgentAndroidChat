@@ -32,6 +32,7 @@ import com.xs.chat.plugins.ImagePlugin
 import com.xs.chat.plugins.VideoPlugin
 import com.xs.chat.plugins.AppIndexPlugin
 import com.xs.chat.plugins.DeviceControlPlugin
+import com.xs.chat.plugins.LocalIntentClassifier
 import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.plugins.PluginRegistry
 import com.xs.chat.plugins.PluginRegistry.PluginInfo
@@ -1456,23 +1457,23 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 输入框消息自动识别设备控制意图：命中直接操控手机（类 Codex 电脑版控制）。 */
+    /** 输入框消息自动识别设备控制意图：本地轻量意图模型实时判断，命中且达置信度才接管。 */
     private fun deviceControlIntent(content: String): Boolean {
         if (!_ui.value.enabledPlugins.contains("device_control")) return false
         val lower = content.lowercase(Locale.ROOT)
-        val compact = lower.replace(" ", "")
+        // 疑问句一律放行（“怎么打开开发者模式”是提问不是指令）
         val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
             || lower.trimEnd().endsWith("?") || lower.trimEnd().endsWith("？") || lower.trimEnd().endsWith("吗")
         if (question) return false
-        // 纯对话意向（解释/讨论/对比等）不做设备控制，避免误判截胡普通聊天
-        if (Regex("(解释一下|是什么意思|有什么区别|怎么理解|谈谈|聊一聊|讨论|介绍一下|怎么处理|帮我想|帮我写|分析一下|分析)").containsMatchIn(lower)
-            || lower.contains("回复")
-        ) return false
+        // 本地意图模型：强聊天信号（解释/写作/求助/语气词）一律放行
+        val (kind, score) = LocalIntentClassifier.classify(content)
+        if (kind == LocalIntentClassifier.Intent.CHAT) return false
         val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
-        val kwTrigger = DEVICE_CONTROL_KEYWORDS.any { compact.contains(it.replace(" ", "")) }
-        // 复杂指令索引识别：复合句式（应用名+动作/句首控制动词）也能命中设备控制
+        val modelTrigger = kind == LocalIntentClassifier.Intent.DEVICE_CONTROL &&
+            score >= LocalIntentClassifier.DEVICE_MIN_SCORE
+        // 复合指令索引（“打开抖音搜索华为手机并点进第一个视频”等）作为补充信号
         val idxTrigger = !question && AppIndexPlugin.isDeviceCommand(getApplication(), lower)
-        if (openTrigger || kwTrigger || idxTrigger) {
+        if (openTrigger || modelTrigger || idxTrigger) {
             _ui.update { it.copy(pendingAttachments = emptyList()) }
             runDeviceControl(content)
             return true
@@ -1550,15 +1551,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "生成一段视频", "生成个视频", "动起来", "生成动画", "动画视频", "动态视频",
             "generate video", "make a video", "create a video", "video generation",
             "text to video", "image to video", "t2v", "i2v"
-        )
-
-        /** 设备控制（类 Codex 电脑版）意图关键词。 */
-        private val DEVICE_CONTROL_KEYWORDS = listOf(
-            "控制手机", "操作手机", "操控手机", "控制设备", "帮我点", "点击屏幕", "点一下",
-            "打开应用", "读屏", "看看屏幕", "查看屏幕", "屏幕内容", "屏幕上有什么",
-            "帮我打开", "帮我输入", "输入文字", "上滑", "下滑", "左滑", "右滑", "滑动屏幕",
-            "返回桌面", "锁屏", "通知栏", "下拉通知", "back", "home", "read screen",
-            "tap", "click", "swipe", "control phone", "control device"
         )
 
         /** 文生图/图生图模型命名特征（覆盖 OpenAI/Flux/SD/即梦/混元/通义等）。 */
