@@ -181,19 +181,20 @@ object Markdown {
     }
 
     /**
-     * 模型常把「**1.标题**正文……**2.标题**正文…」或「1、标题……2、」连成一行输出，
-     * 在编号项前补换行，让列表解析器逐条排版。
+     * 模型常把「B.1. 标题**正文……B.2. 标题**正文…」或「1、标题……2、」连成一行输出，
+     * 只在“句子边界（句号/叹号/问号/冒号/行首）”后出现的编号前补换行，避免把正文里的普通数字误拆成条目。
      */
     private fun normalizeDenseList(text: String): String {
-        val cjk = "[一二三四五六七八九十]"
-        var out = text
-        // 粗体编号（**1. / **一、）前断行
-        out = Regex("(?<=\\S)\\*{1,2}(?=(?:\\d{1,2}|" + cjk + "{1,3})[.．、])")
-            .replace(out) { "\n" + it.value }
-        // 纯编号（1. / 1、 / 一、）前断行，排除小数（3.14）与行首
-        out = Regex("(?<![\\d\\sA-Za-z*])(\\d{1,2})[.．、](?![\\d])|(?<![\\s])(?:" + cjk + "{1,3})[.．、](?![\\d])")
-            .replace(out) { "\n" + it.value }
-        return out
+        val listStartRe = Regex(
+            "(^|[。！？；:：])(?:\\s*\\*{0,2})(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、])(?=\\S)",
+            RegexOption.MULTILINE
+        )
+        val out = listStartRe.replace(text) { m ->
+            if (m.groupValues[1].isEmpty()) m.value else m.groupValues[1] + "\n" + m.groupValues[3]
+        }
+        // 条目行内悬挂的闭合 **（如「1.标题**正文」）清理掉，避免残留星号
+        return Regex("^((?:\\d{1,2}|[一二三四五六七八九十]{1,3})[.．、])(\\S*?)\\*{2}", RegexOption.MULTILINE)
+            .replace(out) { m -> m.groupValues[1] + m.groupValues[2] }
     }
 
     private fun isTableSeparator(line: String): Boolean {
