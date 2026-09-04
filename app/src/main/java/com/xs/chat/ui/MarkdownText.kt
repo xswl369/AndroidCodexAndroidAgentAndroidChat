@@ -70,7 +70,7 @@ object Markdown {
     private val headingRegex = Regex("^#{1,6}\\s+")
     private val ruleRegex = Regex("^(-{3,}|\\*{3,}|_{3,})$")
     // 覆盖 1. / 1、/ 一、 / - * • 列表；中文模型常用「1、」「一、」前缀
-    private val listRegex = Regex("^(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、]|[-*•])\\s*(.*)$")
+    private val listRegex = Regex("^(\\*{0,2})(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、]|[-•])\\s*(.*)$")
     private val tableSepRegex = Regex("^[\\s|:|-]+$")
 
     /** 解析失败的兜底：整体作为纯文本段落，保证任何内容都能渲染。 */
@@ -78,7 +78,7 @@ object Markdown {
 
     fun parse(source: String): List<Block> {
         val blocks = mutableListOf<Block>()
-        val lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        val lines = normalizeDenseList(source).replace("\r\n", "\n").replace("\r", "\n").split("\n")
         var i = 0
         val paragraph = mutableListOf<String>()
 
@@ -146,19 +146,22 @@ object Markdown {
                 listRegex.matchEntire(trimmed) != null -> {
                     flushParagraph()
                     val first = listRegex.matchEntire(trimmed)!!
-                    val ordered = first.groupValues[1].first().isDigit() ||
-                        "一二三四五六七八九十".contains(first.groupValues[1].first())
+                    val marker0 = first.groupValues[2]
+                    val ordered = marker0.first().isDigit() ||
+                        "一二三四五六七八九十".contains(marker0.first())
                     val markers = mutableListOf<String>()
                     val items = mutableListOf<List<Span>>()
                     while (i < lines.size) {
                         val t = lines[i].trim()
                         val item = listRegex.matchEntire(t) ?: break
-                        val marker = item.groupValues[1]
+                        val marker = item.groupValues[2]
                         val itemOrdered = marker.first().isDigit() ||
                             "一二三四五六七八九十".contains(marker.first())
                         if (itemOrdered != ordered) break
                         markers += marker.trimEnd('.', '、')
-                        items += parseInline(item.groupValues[2])
+                        var rest = item.groupValues[3]
+                        if (item.groupValues[1].length == 2) rest = rest.replaceFirst("**", "")
+                        items += parseInline(rest)
                         i++
                     }
                     blocks += Block.ListBlock(markers, items, ordered)
@@ -175,6 +178,22 @@ object Markdown {
         }
         flushParagraph()
         return blocks
+    }
+
+    /**
+     * 模型常把「**1.标题**正文……**2.标题**正文…」或「1、标题……2、」连成一行输出，
+     * 在编号项前补换行，让列表解析器逐条排版。
+     */
+    private fun normalizeDenseList(text: String): String {
+        val cjk = "[一二三四五六七八九十]"
+        var out = text
+        // 粗体编号（**1. / **一、）前断行
+        out = Regex("(?<=\\S)\\*{1,2}(?=(?:\\d{1,2}|" + cjk + "{1,3})[.．、])")
+            .replace(out) { "\n" + it.value }
+        // 纯编号（1. / 1、 / 一、）前断行，排除小数（3.14）与行首
+        out = Regex("(?<![\\d\\sA-Za-z*])(\\d{1,2})[.．、](?![\\d])|(?<![\\s])(?:" + cjk + "{1,3})[.．、](?![\\d])")
+            .replace(out) { "\n" + it.value }
+        return out
     }
 
     private fun isTableSeparator(line: String): Boolean {
