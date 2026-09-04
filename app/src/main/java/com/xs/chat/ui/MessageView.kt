@@ -362,9 +362,7 @@ private fun SearchReferencesCard(references: List<SearchReference>) {
                         .clickable {
                             val uri = ref.url.trim()
                             if (uri.startsWith("http")) {
-                                runCatching {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
-                                }
+                                WebBrowserActivity.open(context, uri)
                             }
                         }
                         .padding(horizontal = 10.dp, vertical = 8.dp)

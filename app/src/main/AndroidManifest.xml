@@ -87,6 +87,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 内置浏览器（Via 简化版）：参考资料/搜索链接在 App 内打开 -->
+        <activity
+            android:name=".ui.WebBrowserActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
     </application>
 
 </manifest>
