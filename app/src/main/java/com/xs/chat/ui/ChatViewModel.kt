@@ -1704,6 +1704,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     val trimmed = trimContext(toolFollowMsg?.let { messages + it } ?: messages)
                     val parts = resolveParts(trimmed)
                     val deltaBuf = StringBuilder()
+                    var lastReasoning = ""
+                    var lastReasoningFlush = 0L
                     var lastFlush = 0L
                     fun flushDelta() {
                         val chunk = deltaBuf.toString().also { deltaBuf.setLength(0) }
@@ -1716,6 +1718,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         temperature = _ui.value.temperature,
                         reasoningEffort = _ui.value.reasoningEffort,
                         attachmentParts = parts,
+                        // 高思考档下模型可能长时间只推 reasoning 不出正文：实时展示，避免“死机”错觉
+                        noContentTimeoutMs = 90_000,
+                        onReasoning = { rz ->
+                            lastReasoning = rz
+                            val now = System.currentTimeMillis()
+                            if (now - lastReasoningFlush >= 100) {
+                                lastReasoningFlush = now
+                                setReasoning(assistantId, rz)
+                            }
+                        },
                         onDelta = { delta ->
                             sawContent = true
                             deltaBuf.append(delta)
@@ -1727,9 +1739,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         },
                         onUsage = { usage = it }
-                    ).also { flushDelta() }
+                    ).also {
+                        flushDelta()
+                        if (lastReasoning.isNotEmpty()) setReasoning(assistantId, lastReasoning)
+                    }
                 }
                 // 模型输出原生 function:web_search 工具语法时：执行真实搜索并追加一轮续答
+                if (!completed) {
+                    // 长时间无正文被中止（超过 90s 或连接被取消）：不再空等，交下方非流式兜底补答
+                    Log.w(TAG, "stream aborted empty, fallback to non-stream")
+                    break
+                }
                 if (completed) {
                     val toolQuery = WebSearchPlugin.extractToolSearchQuery(assistantContent(assistantId))
                     sanitizeAssistantContent(assistantId)
@@ -1765,12 +1785,14 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             }
             if (!_ui.value.isStreaming) return@launch // 已被 stop() 接管
-            if (completed && assistantContent(assistantId).isBlank()) {
-                // 流式空回复：改用非流式补全再试一次（规避网关只回 tool_calls/思考、或丢包只读一半流），仍空才报错
+            if (assistantContent(assistantId).isBlank()) {
+                // 流式空回复/超时无正文：改用非流式补全再试一次（规避网关只回 tool_calls/思考、
+                // 高思考档 90s 无正文被中止、或丢包只读一半流），仍空才报错
                 val fb = runCatching {
                     withContext(Dispatchers.IO) {
                         val base = toolFollowMsg?.let { messages + it } ?: messages
-                        instance.completeChat(
+                        val fbApi = OpenAiApi(model.baseUrl, model.apiKey, connectTimeoutMs = 10_000, readTimeoutMs = 120_000)
+                        fbApi.completeChat(
                             model = model.modelId,
                             systemPrompt = buildSystemPrompt(if (toolFollowMsg != null) currentSearch else searchResult),
                             userMessages = base.map { it.role.name.lowercase() to it.content },
@@ -1779,7 +1801,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }.getOrNull()?.trim()
                 if (!fb.isNullOrBlank()) {
-                    Log.w(TAG, "empty stream: non-stream fallback ok len=${fb.length}")
+                    Log.w(TAG, "empty stream: non-stream fallback ok len=${fb.length} completed=$completed")
                     appendDelta(assistantId, fb)
                 } else {
                     Log.w(TAG, "empty stream: final fallback failed pass=$pass search=${currentSearch?.length ?: 0}")
@@ -1803,6 +1825,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 )
                 if (!currentRefs.isNullOrEmpty()) attachReferences(assistantId, currentRefs)
+                // 生成结束：把"正在继续生成回答…"改为完成态，避免气泡停留"进行中"观感
+                if (!currentRefs.isNullOrEmpty()) {
+                    updateSearchMetaOnly(assistantId, "✅ 已从全网找到 ${currentRefs.size} 篇相关内容")
+                }
             }
             // 兜底：模型偷懒只回链接列表时，用搜索材料重写成一版完整答案（不影响参考资料卡片）
             if (completed && !currentRefs.isNullOrEmpty() && !currentSearch.isNullOrBlank()) {
@@ -1945,6 +1971,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (last.id != assistantId) return@update st
             val content = if (last.content.isBlank()) "请求失败：$message" else last.content
             st.copy(messages = st.messages.dropLast(1) + last.copy(content = content, error = true))
+        }
+    }
+
+    /** 实时更新模型思考过程（reasoning）；仅 UI 展示，不进入模型上下文。 */
+    private fun setReasoning(assistantId: String, text: String) {
+        _ui.update { st ->
+            val last = st.messages.lastOrNull() ?: return@update st
+            if (last.id != assistantId) return@update st
+            st.copy(messages = st.messages.dropLast(1) + last.copy(reasoning = text.take(2000)))
         }
     }
 

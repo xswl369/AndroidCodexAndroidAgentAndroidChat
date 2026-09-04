@@ -270,6 +270,31 @@ fun AssistantMessageView(
                     }
                     Spacer(Modifier.height(6.dp))
                 }
+                // 思考过程预览（高思考档下避免“死机”错觉）
+                message.reasoning.takeIf { it.isNotBlank() }?.let { rz ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            Text(
+                                if (isStreaming) "🤔 思考中…" else "💭 思考过程",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = primary
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                rz,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
                 // 长按选中文字并就地弹出复制菜单
                 SelectableMessage(Modifier.fillMaxWidth()) {
                     MarkdownText(

@@ -63,6 +63,8 @@ data class ChatMessage(
     val callMeta: CallMeta? = null,
     /** 生成进度 0-100；图片/视频生成中实时更新，完成后置 null */
     val progress: Int? = null,
+    /** 模型思考过程（reasoning 流式）实时展示；不入模型上下文，旧 JSON 无此字段时为空 */
+    val reasoning: String = "",
     /** 联网搜索资料；旧版本 JSON 无此字段时为 null */
     val references: List<SearchReference>? = null,
     /** 联网搜索状态（「正在全网搜索…」「已找到 N 篇相关内容」）；仅供 UI 展示，不进入模型上下文 */

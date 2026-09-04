@@ -72,6 +72,8 @@ class OpenAiApi(
         reasoningEffort: String? = null,
         attachmentParts: Map<String, List<ContentPart>> = emptyMap(),
         onDelta: (String) -> Unit,
+        noContentTimeoutMs: Long = 120_000,
+        onReasoning: ((String) -> Unit)? = null,
         onUsage: ((Usage) -> Unit)? = null
     ): Boolean {
         cancelled = false
@@ -119,9 +121,16 @@ class OpenAiApi(
             val reader = bodyReader(c)
             var sawContent = false
             var toolQuery: String? = null
-            var reasoningChars = 0
+            val reasoningBuf = StringBuilder()
+            // 正文硬截止：思考型网关常“只推 reasoning、不结束、不出正文”，
+            // 不能按“有无数据”续命，必须按“久无正文”强制中止交给上层降级
+            val contentDeadline = System.currentTimeMillis() + noContentTimeoutMs
             while (true) {
                 if (cancelled) return false
+                if (!sawContent && System.currentTimeMillis() > contentDeadline) {
+                    Log.w(DIAG_TAG, "no content within ${noContentTimeoutMs}ms reasoning=${reasoningBuf.length} chars, abort for fallback")
+                    return false
+                }
                 val line = reader.readLine() ?: break
                 if (!line.startsWith("data:")) continue
                 val payload = line.removePrefix("data:").trim()
@@ -147,8 +156,12 @@ class OpenAiApi(
                     sawContent = true
                     onDelta(content)
                 }
-                // 部分网关把正文流在 reasoning_content（思考型模型/输出额度被思考占满），累积备用
-                reasoningChars += extractContent(deltaObj?.get("reasoning_content")).length
+                // 思考内容：实时转发给 UI 展示，避免高思考档下看起来像死机
+                val reasoning = extractContent(deltaObj?.get("reasoning_content"))
+                if (reasoning.isNotEmpty()) {
+                    reasoningBuf.append(reasoning)
+                    onReasoning?.invoke(reasoningBuf.toString())
+                }
                 // 原生 tool_calls（部分网关思考型模型用）：正文为空时转内置搜索流程
                 extractToolCallQuery(deltaObj)?.takeIf { it.isNotBlank() }?.let { toolQuery = it }
                 // 携带 usage 的 chunk（通常为最后一个）：无论是否带 choices 都解析
@@ -164,7 +177,7 @@ class OpenAiApi(
                     onDelta("function:web_search(\"query\": \"$toolQuery\")")
                 }
             }
-            Log.w(DIAG_TAG, "done sawContent=$sawContent reasoningChars=$reasoningChars tool=${toolQuery != null}")
+            Log.w(DIAG_TAG, "done sawContent=$sawContent reasoning=${reasoningBuf.length} tool=${toolQuery != null}")
             return true
         } finally {
             if (!keepAlive) c.disconnect()
