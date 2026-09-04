@@ -56,7 +56,7 @@ sealed interface Span {
 sealed interface Block {
     data class Paragraph(val spans: List<Span>) : Block
     data class Heading(val level: Int, val spans: List<Span>) : Block
-    data class ListBlock(val items: List<List<Span>>, val ordered: Boolean) : Block
+    data class ListBlock(val markers: List<String>, val items: List<List<Span>>, val ordered: Boolean) : Block
     data class Quote(val spans: List<Span>) : Block
     data class CodeBlock(val lang: String, val code: String) : Block
     data class Table(val headers: List<String>, val rows: List<List<String>>) : Block
@@ -69,7 +69,8 @@ object Markdown {
 
     private val headingRegex = Regex("^#{1,6}\\s+")
     private val ruleRegex = Regex("^(-{3,}|\\*{3,}|_{3,})$")
-    private val listRegex = Regex("^(\\d+\\.|[-*+])\\s+(.*)$")
+    // 覆盖 1. / 1、/ 一、 / - * • 列表；中文模型常用「1、」「一、」前缀
+    private val listRegex = Regex("^(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、]|[-*•])\\s*(.*)$")
     private val tableSepRegex = Regex("^[\\s|:|-]+$")
 
     /** 解析失败的兜底：整体作为纯文本段落，保证任何内容都能渲染。 */
@@ -145,16 +146,22 @@ object Markdown {
                 listRegex.matchEntire(trimmed) != null -> {
                     flushParagraph()
                     val first = listRegex.matchEntire(trimmed)!!
-                    val ordered = first.groupValues[1].first().isDigit()
+                    val ordered = first.groupValues[1].first().isDigit() ||
+                        "一二三四五六七八九十".contains(first.groupValues[1].first())
+                    val markers = mutableListOf<String>()
                     val items = mutableListOf<List<Span>>()
                     while (i < lines.size) {
                         val t = lines[i].trim()
                         val item = listRegex.matchEntire(t) ?: break
-                        if (item.groupValues[1].first().isDigit() != ordered) break
+                        val marker = item.groupValues[1]
+                        val itemOrdered = marker.first().isDigit() ||
+                            "一二三四五六七八九十".contains(marker.first())
+                        if (itemOrdered != ordered) break
+                        markers += marker.trimEnd('.', '、')
                         items += parseInline(item.groupValues[2])
                         i++
                     }
-                    blocks += Block.ListBlock(items, ordered)
+                    blocks += Block.ListBlock(markers, items, ordered)
                 }
                 trimmed.isEmpty() -> {
                     flushParagraph()
@@ -319,11 +326,11 @@ fun MarkdownText(
                 )
                 is Block.ListBlock -> {
                     block.items.forEachIndexed { idx, spans ->
-                        Row(Modifier.padding(start = 6.dp)) {
+                        Row(Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
                             Text(
                                 if (block.ordered) "${idx + 1}." else "•",
                                 style = textStyle.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.width(28.dp)
+                                modifier = Modifier.width(36.dp)
                             )
                             InlineText(spans, textStyle)
                         }
