@@ -550,9 +550,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
 
-        // 内置验证命令（自动化/ADB 可测，不依赖模型）：check news / check lunar / check huangli / check search <词>
-        if (content.startsWith("check ", ignoreCase = true)) {
-            runSelfCheck(content.substringAfter(' ').trim())
+        // 内置验证命令（自动化/ADB 可测，不依赖模型）：check news / check lunar / check huangli / check date
+        if (content.startsWith("check", ignoreCase = true)) {
+            runSelfCheck(if (content.length > 5) content.substring(5).trimStart() else "")
             return
         }
 

@@ -298,6 +298,13 @@ object WebSearchPlugin {
     private fun builtInQuery(query: String): SearchOutcome? {
         val q = query.trim()
         val lower = q.lowercase(Locale.ROOT)
+        // 日期类问题（今天几月几号/今天星期几/现在日期）：内置直接回答，绝不走搜索引擎
+        if (lower.length <= 16 && (lower.contains("今天") || lower.contains("日期") ||
+            lower.contains("几月几号") || lower.contains("几号") ||
+            lower.contains("星期几") || lower.contains("周几") || lower.contains("礼拜几"))
+        ) {
+            return lunarOutcome("农历今天")
+        }
         if (lower.contains("农历") || lower.contains("阴历") || lower.contains("旧历") || lower.contains("老历")) {
             return lunarOutcome(q)
         }
@@ -472,6 +479,11 @@ object WebSearchPlugin {
                 val r = peopleDailyOutcome()
                 if (r == null) "❌ news：人民网 RSS 获取失败（网络不可达或超时）"
                 else "✅ 人民网新闻 ${r.refs.size} 条\n" + r.text
+            }
+            k in setOf("date", "today") -> {
+                val r = lunarOutcome("农历今天")
+                if (r == null) "❌ date 计算失败"
+                else "✅ " + r.text
             }
             k in setOf("lunar", "农历") -> {
                 val r = lunarOutcome("农历今天")
