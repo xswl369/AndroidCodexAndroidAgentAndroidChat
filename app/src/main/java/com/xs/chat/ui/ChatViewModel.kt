@@ -1791,7 +1791,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 val fb = runCatching {
                     withContext(Dispatchers.IO) {
                         val base = toolFollowMsg?.let { messages + it } ?: messages
-                        val fbApi = OpenAiApi(model.baseUrl, model.apiKey, connectTimeoutMs = 10_000, readTimeoutMs = 120_000)
+                        val fbApi = OpenAiApi(model.baseUrl, model.apiKey, connectTimeoutMs = 10_000, readTimeoutMs = 60_000)
                         fbApi.completeChat(
                             model = model.modelId,
                             systemPrompt = buildSystemPrompt(if (toolFollowMsg != null) currentSearch else searchResult),
