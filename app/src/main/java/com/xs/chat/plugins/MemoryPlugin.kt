@@ -19,10 +19,11 @@ object MemoryPlugin {
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
 
-    /** 追加一条操作记录：时间戳 | 动作 | 详情。 */
+    /** 追加一条操作记录：时间戳 | 动作 | 详情 | 禁止查看截图。 */
     fun log(context: Context, action: String, detail: String = "") {
         val ts = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        val line = "$ts | $action${if (detail.isBlank()) "" else " | $detail"}"
+        val detailPart = if (detail.isBlank()) "" else " | $detail"
+        val line = "$ts | $action$detailPart | 禁止查看截图"
         val maxLines = SettingsStore(context).memoryLimit.takeIf { it > 0 } ?: DEFAULT_MAX_LINES
         io.execute {
             runCatching {
