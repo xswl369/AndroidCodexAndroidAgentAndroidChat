@@ -368,6 +368,7 @@ fun ChatScreen(
                                 Role.USER -> UserMessageBubble(
                                     content = message.content,
                                     attachments = message.attachments.orEmpty(),
+                                    onCopy = { copyText(message.content) },
                                     onEdit = {
                                         editingIndex = index
                                         draft = message.content
@@ -395,12 +396,14 @@ fun ChatScreen(
                             }
                         }
                     }
-                    if (state.messages.isNotEmpty() && !nearBottom) {
-                        JumpToBottomButton(
-                            onClick = { scope.launch { listState.scrollToItem(state.messages.size - 1) } },
-                            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
-                        )
-                    }
+                if (state.messages.isNotEmpty() && !nearBottom) {
+                    JumpToBottomButton(
+                        onClick = { scope.launch { listState.scrollToItem(state.messages.size - 1) } },
+                        // 长按直达最新消息末尾（回答下方的三点菜单/复制按钮无需手动长滑）
+                        onLongClick = { scope.launch { scrollToStreamEnd(listState, state.messages.size - 1) } },
+                        modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 16.dp)
+                    )
+                }
                 }
             }
         }
@@ -1156,9 +1159,10 @@ private fun ThumbnailTile(item: PickedAttachment, bitmap: ImageBitmap?, onRemove
     }
 }
 
-/** Codex 风格悬浮按钮：旋转圆环动画，点击跳转到最新消息。 */
+/** Codex 风格悬浮按钮：旋转圆环动画，点击跳到最新消息首行，长按直达消息末尾。 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun JumpToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun JumpToBottomButton(onClick: () -> Unit, onLongClick: () -> Unit, modifier: Modifier = Modifier) {
     val transition = rememberInfiniteTransition(label = "jump")
     val angle by transition.animateFloat(
         initialValue = 0f,
@@ -1173,7 +1177,7 @@ private fun JumpToBottomButton(onClick: () -> Unit, modifier: Modifier = Modifie
             .size(44.dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f))
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
     ) {
         Canvas(Modifier.size(26.dp).graphicsLayer { rotationZ = angle }) {
             drawArc(

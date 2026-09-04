@@ -4,6 +4,7 @@ import android.util.Log
 import com.xs.chat.data.SearchReference
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
@@ -20,9 +21,10 @@ private typealias SearchEngine = (String) -> List<SearchReference>?
 
 /**
  * 联网搜索插件（元宝同款）：
- * ① 数据源按国内网络环境依次尝试：搜狗 → Bing RSS → Baidu → DuckDuckGo（海外兜底）；
+ * ① 数据源按网络环境依次尝试：Google → 搜狗 → Bing RSS → Baidu → DuckDuckGo（海外兜底）；
  * ② 返回结构化结果：完整文本喂给模型（带 [来源N] 编号），结构化引用条目供 UI 渲染参考资料卡片；
  * ③ 搜索模式由 ChatViewModel 统一控制：0 关闭 / 1 自动 / 2 总是开启。
+ * ④ 内置直答与站点爬虫：农历/黄历/人民网/历史上的今天（百度百科接口）/球迷屋赛程（指定站点直接抓取）。
  */
 object WebSearchPlugin {
 
@@ -34,9 +36,11 @@ object WebSearchPlugin {
     const val MODE_ALWAYS = 2
 
     private const val TIMEOUT_MS = 5000
-    private const val MAX_RESULTS = 5
-    /** 只对前 2 条结果抓取正文（单条 3s 超时），避免串行抓取拖慢整体搜索。 */
-    private const val BODY_FETCH_LIMIT = 2
+    /** Google 直连国内常不通（超时即自动降级到后续引擎），给更短超时避免拖慢整轮搜索。 */
+    private const val GOOGLE_TIMEOUT_MS = 4000
+    private const val MAX_RESULTS = 8
+    /** 只对前 3 条结果抓取正文（单条 3s 超时），避免串行抓取拖慢整体搜索。 */
+    private const val BODY_FETCH_LIMIT = 3
     private const val MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; xs-chat) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -47,18 +51,61 @@ object WebSearchPlugin {
         val q = query.trim()
         if (q.isEmpty()) return@withContext null
         builtInQuery(q)?.let { return@withContext it }
+        // 查询变体：先精简后原文（整句盲搜命中率低，精简版优先）
+        val variants = queryVariants(q)
         val engines = listOf(
-            "Sogou" to ::searchSogou, "Bing" to ::searchBingRss,
+            "Google" to ::searchGoogle, "Sogou" to ::searchSogou, "Bing" to ::searchBingRss,
             "Baidu" to ::searchBaidu, "DuckDuckGo" to ::searchDuckDuckGo
         )
         val failures = mutableListOf<String>()
         for ((name, engine) in engines) {
-            val refs = runCatching { engine(q) }.getOrNull()
-            if (!refs.isNullOrEmpty()) return@withContext SearchOutcome(format(query, refs), refs)
+            for (v in variants) {
+                val refs = runCatching { engine(v) }.getOrNull()
+                if (!refs.isNullOrEmpty()) return@withContext SearchOutcome(format(v, refs), refs)
+            }
             failures.add(name)
         }
         Log.w(TAG, "all engines failed: ${failures.joinToString(" / ")} query=$q")
         null
+    }
+
+    /** 查询变体：先精简（去客套/填充/汇总类词），再回退原文，最多 2 条。 */
+    private fun queryVariants(raw: String): List<String> {
+        val clean = stripQueryNoise(raw)
+        return listOf(clean, raw).distinct().filter { it.isNotBlank() }
+    }
+
+    /** 提炼搜索关键词：去掉“帮我/请/汇总下/整理一下”等口语填充词，避免整句盲搜。 */
+    private fun stripQueryNoise(q: String): String {
+        var t = q.trim()
+        // 去掉首部客套与动词引导
+        t = Regex("^(?:请帮我|帮忙|帮我?|麻烦|请|请问|咱们|给我)?(?:联网搜索|搜索一下|搜索|搜一下|搜|查找一下|查找|查一下|查查|查|帮我搜|帮我查|看看|看一下|看)[:：,，\\s]*").replaceFirst(t, "")
+        // 去掉尾部收尾与汇总/总结类词
+        t = t.replace(Regex("(汇总一下|汇总|总结一下|总结|归纳一下|归纳|整理一下|整理|收集一下|介绍一下|汇报一下|说说|一下|好不好|谢谢|吧|呢|呀|嘛|哦|啊|的)$"), "")
+        // 去掉句中口语填充词
+        t = t.replace(Regex("(汇总一下|汇总下|总结一下|总结下|归纳一下|整理一下|帮我|请|麻烦|顺便|给我)"), " ")
+            .replace(Regex("\\s+"), " ").trim()
+        return t.ifBlank { q.trim() }
+    }
+
+    /** Google（优先尝试，国内直连常不通会超时自动回退）：解析 /url?q= 真实链接 + h3 标题。 */
+    private fun searchGoogle(query: String): List<SearchReference>? {
+        val url = "https://www.google.com/search?q=" + encode(query) + "&num=10&hl=zh-CN"
+        val html = httpGet(url, GOOGLE_TIMEOUT_MS, DESKTOP_UA) ?: return null
+        if (html.contains("unusual traffic") || html.contains("not a robot") ||
+            html.contains("captcha") || html.contains("请输入验证码") || !html.contains("<h3")
+        ) return null
+        val hits = mutableListOf<SearchReference>()
+        val blockRe = Regex("<a[^>]+href=\"/url\\?q=([^&\"']+)[^>]*>(.*?)</a>", RegexOption.DOT_MATCHES_ALL)
+        for (m in blockRe.findAll(html)) {
+            if (hits.size >= MAX_RESULTS) break
+            val target = m.groupValues[1].replace("&amp;", "&")
+            val title = stripHtml(m.groupValues[2]).trim()
+            if (!target.startsWith("https://") && !target.startsWith("http://")) continue
+            if (title.isEmpty() || title.contains("Google 翻译")) continue
+            hits.add(SearchReference(title.take(80), target))
+        }
+        return hits.ifEmpty { null }
     }
 
     /** 搜狗（元宝同款搜索源）：解析移动版 vr 结果卡片，真实链接藏在 /link 重定向参数中。 */
@@ -298,8 +345,20 @@ object WebSearchPlugin {
     private fun builtInQuery(query: String): SearchOutcome? {
         val q = query.trim()
         val lower = q.lowercase(Locale.ROOT)
+        // 球迷屋：指定站点直接爬赛程，不依赖搜索引擎
+        if (lower.contains("球迷屋") || lower.contains("qiumiwu")) {
+            return qiumiwuOutcome(q)
+        }
+        // 历史上的今天：内置百度百科数据（优先于日期快答，防「9月4日历史上的今天」被误吞）
+        val hasDate = Regex("""\d{1,2}\s*月\s*\d{1,2}""").containsMatchIn(q)
+        if (lower.contains("历史上的今天") ||
+            lower.contains("大事记") ||
+            (lower.contains("历史") && (lower.contains("今天") || hasDate))
+        ) {
+            return historyOutcome(q)
+        }
         // 日期类问题（今天几月几号/今天星期几/现在日期）：内置直接回答，绝不走搜索引擎
-        if (lower.length <= 16 && (lower.contains("今天") || lower.contains("日期") ||
+        if (lower.length <= 16 && !lower.contains("历史") && !lower.contains("大事记") && (lower.contains("今天") || lower.contains("日期") ||
             lower.contains("几月几号") || lower.contains("几号") ||
             lower.contains("星期几") || lower.contains("周几") || lower.contains("礼拜几"))
         ) {
@@ -317,6 +376,86 @@ object WebSearchPlugin {
             return peopleDailyOutcome()
         }
         return null
+    }
+
+    /** 历史上的今天：百度百科 eventsOnHistory 月接口（{month}.json），按日过滤取前 10 条，当月进程内缓存。 */
+    private var historyCache: Pair<Int, JSONObject>? = null
+
+    private fun historyOutcome(query: String): SearchOutcome? {
+        val today = Calendar.getInstance()
+        val target = parseSolarDate(query, today) ?: today
+        val month = target.get(Calendar.MONTH) + 1
+        val day = target.get(Calendar.DAY_OF_MONTH)
+        val cached = historyCache
+        val json = if (cached != null && cached.first == month) cached.second
+        else runCatching {
+            val text = httpGet(
+                "https://baike.baidu.com/cms/home/eventsOnHistory/%02d.json".format(month),
+                6_000, DESKTOP_UA
+            ) ?: return null
+            JSONObject(text).optJSONObject("%02d".format(month)) ?: return null
+        }.getOrNull() ?: return null
+        historyCache = month to json
+        val dayKey = "%02d%02d".format(month, day)
+        val list: JSONArray = json.optJSONArray(dayKey) ?: return null
+        if (list.length() == 0) return null
+        val sb = StringBuilder("📜 ").append(month).append("月").append(day).append("日·历史上的今天：")
+        val refs = mutableListOf<SearchReference>()
+        val n = minOf(list.length(), 10)
+        for (i in 0 until n) {
+            val o = list.optJSONObject(i) ?: continue
+            val year = o.optString("year")
+            val title = stripHtml(o.optString("title")).trim()
+            if (title.isEmpty()) continue
+            val desc = stripHtml(o.optString("desc")).replace(Regex("\\s+"), " ").trim().take(80)
+            val link = o.optString("link").ifBlank { "https://baike.baidu.com/calendar/" }
+            sb.append("\n").append(refs.size + 1).append(". ").append(year).append("年 · ").append(title)
+            if (desc.isNotBlank()) sb.append("：").append(desc)
+            refs.add(SearchReference("${year}年 $title", link))
+        }
+        if (refs.isEmpty()) return null
+        sb.append("\n（数据来源：百度百科·历史上的今天）")
+        return SearchOutcome(sb.toString(), refs)
+    }
+
+    /** 球迷屋：直接抓取赛程列表页（今日场次/比分/状态），用户明确指定该站时优先于搜索引擎。 */
+    private fun qiumiwuOutcome(query: String): SearchOutcome? {
+        val lower = query.lowercase(Locale.ROOT)
+        val sportPath = when {
+            lower.contains("篮球") || lower.contains("nba") || lower.contains("cba") -> "lanqiu"
+            else -> "zuqiu"
+        }
+        val html = httpGet("https://www.qiumiwu.com/game/$sportPath", 8_000, DESKTOP_UA) ?: return null
+        val dayBlock = Regex(
+            "<details class=\"fixture__details fixture__details--today\"[^>]*>(.*?)</details>",
+            RegexOption.DOT_MATCHES_ALL
+        ).find(html)?.groupValues?.get(1) ?: return null
+        val summary = Regex("<summary[^>]*>(.*?)</summary>", RegexOption.DOT_MATCHES_ALL)
+            .find(dayBlock)?.groupValues?.get(1)?.let { stripHtml(it) }?.trim() ?: "今日赛程"
+        val sb = StringBuilder(if (sportPath == "lanqiu") "🏀 球迷屋·" else "⚽ 球迷屋·").append(summary)
+        val refs = mutableListOf<SearchReference>()
+        // 每场比赛一个 fixture__list 外层块（内含 data/score/extra），用前瞻切块避免非贪婪提前收尾
+        val rowRe = Regex(
+            "<div class=\"fixture__list\"[^>]*>(.*?)(?=<div class=\"fixture__list\"|</section>)",
+            RegexOption.DOT_MATCHES_ALL
+        )
+        for (m in rowRe.findAll(dayBlock)) {
+            val row = m.groupValues[1]
+            val league = Regex("fixture__list__league\">([^<]+)<").find(row)?.groupValues?.get(1)?.trim().orEmpty()
+            val time = Regex("fixture__list__time\">\\s*([^<]+?)\\s*</span>").find(row)?.groupValues?.get(1)?.trim().orEmpty()
+            val status = Regex("fixture__list__status\">([^<]+)<").find(row)?.groupValues?.get(1)?.trim().orEmpty()
+            val teams = Regex("fixture__list__team\"><span>([^<]+)</span>")
+                .findAll(row).map { it.groupValues[1].trim() }.toList()
+            val scores = Regex("fixture__list__score__text\"[^>]*>\\s*([^<]+?)\\s*</span>")
+                .findAll(row).map { it.groupValues[1].trim() }.toList()
+            if (teams.size < 2) continue
+            val link = Regex("href=\"(/game/stat-[^\"]+)\"").find(row)?.groupValues?.get(1)
+            val score = if (scores.size >= 2) " ${scores[0]} - ${scores[1]}" else ""
+            val line = "${league} ${time} ${teams[0]} vs ${teams[1]}$score（$status）".trim()
+            sb.append("\n").append(refs.size + 1).append(". ").append(line)
+            refs.add(SearchReference(line, "https://www.qiumiwu.com" + (link ?: "/game/$sportPath")))
+        }
+        return if (refs.isEmpty()) null else SearchOutcome(sb.toString(), refs)
     }
 
     /** 农历查询：支持「农历今天/农历2026年9月4日/9月4日」等，输出干支纪年+生肖+农历月日。 */

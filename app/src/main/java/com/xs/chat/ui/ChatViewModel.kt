@@ -1240,17 +1240,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val failed = outcome == null
             if (failed) MemoryPlugin.log(getApplication(), "联网搜索失败", query.take(40))
             else MemoryPlugin.log(getApplication(), "联网搜索", query.take(40))
-            if (failed && explicit) {
-                // 显式搜索且失败：直接给出失败结果
+            if (failed) {
+                // 搜索无结果：如实告知，不再让模型无依据自由发挥（避免编造错误答案）
                 clearSearchPlaceholder(assistantId)
-                completeAssistant(assistantId, "❌ 联网搜索失败：暂时无法获取结果，请稍后重试", emptyList())
+                completeAssistant(
+                    assistantId,
+                    if (explicit) "⚠️ 未找到相关内容：联网搜索未返回结果，请换个说法或稍后重试"
+                    else "⚠️ 未找到与「${query.take(30)}」相关的网页内容，已按普通聊天回答（建议切换到「总是开启」并精简提问）",
+                    emptyList()
+                )
                 finishPluginWork()
                 return@launch
             }
             // 元宝同款进度：找到结果后更新状态文案，随后开始流式生成
             updateSearchMetaOnly(
                 assistantId,
-                if (failed) "⚠️ 联网搜索未获取到结果"
+                if (outcome?.refs.isNullOrEmpty()) "✅ 已获取相关内容，正在生成回答…"
                 else "✅ 已从全网找到 ${outcome?.refs?.size ?: 0} 篇相关内容，正在生成回答…"
             )
             streamWithSearchContext(assistantId, outcome?.text, outcome?.refs)
@@ -1459,6 +1464,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         val question = Regex("(如何|怎么|怎样|教程|方法|推荐|能否|能不能|可以吗|会吗)").containsMatchIn(lower)
             || lower.trimEnd().endsWith("?") || lower.trimEnd().endsWith("？") || lower.trimEnd().endsWith("吗")
         if (question) return false
+        // 纯对话意向（解释/讨论/对比等）不做设备控制，避免误判截胡普通聊天
+        if (Regex("(解释一下|是什么意思|有什么区别|怎么理解|谈谈|聊一聊|讨论|介绍一下|怎么处理|帮我想|帮我写|分析一下|分析)").containsMatchIn(lower)
+            || lower.contains("回复")
+        ) return false
         val openTrigger = Regex("^(打开|启动|开启|open|launch)\\s*\\S.*$").matches(lower)
         val kwTrigger = DEVICE_CONTROL_KEYWORDS.any { compact.contains(it.replace(" ", "")) }
         // 复杂指令索引识别：复合句式（应用名+动作/句首控制动词）也能命中设备控制

@@ -112,6 +112,7 @@ private fun MessageMenu(
 fun UserMessageBubble(
     content: String,
     attachments: List<Attachment>,
+    onCopy: () -> Unit,
     onEdit: () -> Unit,
     onTranslate: () -> Unit,
     onShare: () -> Unit,
@@ -141,6 +142,7 @@ fun UserMessageBubble(
         Row(Modifier.padding(top = 2.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
             MessageMenu(
                 items = listOf(
+                    MsgAction.COPY to Lang.t(lang, "copy"),
                     MsgAction.EDIT to Lang.t(lang, "edit_message"),
                     MsgAction.TRANSLATE to Lang.t(lang, "translate_message"),
                     MsgAction.SHARE to Lang.t(lang, "share_message"),
@@ -150,6 +152,7 @@ fun UserMessageBubble(
                 onOpenChange = { menuOpen = it },
                 onAction = { action ->
                     when (action) {
+                        MsgAction.COPY -> onCopy()
                         MsgAction.EDIT -> onEdit()
                         MsgAction.TRANSLATE -> onTranslate()
                         MsgAction.SHARE -> onShare()
