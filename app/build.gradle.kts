@@ -25,9 +25,23 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // 签名材料优先级：环境变量签名，否则默认本地 debug keystore（与日常 debug 装机同证书，可覆盖升级）
+            storeFile = file(
+                System.getenv("XS_RELEASE_KEYSTORE")
+                    ?: "${System.getProperty("user.home")}\\.android\\debug.keystore"
+            )
+            storePassword = System.getenv("XS_RELEASE_STORE_PASS") ?: "android"
+            keyAlias = System.getenv("XS_RELEASE_KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("XS_RELEASE_KEY_PASS") ?: "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 
