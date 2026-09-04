@@ -1,5 +1,6 @@
 package com.xs.chat.data
 
+import android.util.Log
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -23,6 +24,10 @@ class OpenAiApi(
     private val connectTimeoutMs: Int = 10_000,
     private val readTimeoutMs: Int = 5 * 60_000
 ) {
+    private companion object {
+        private const val DIAG_TAG = "OpenAiStreamDiag"
+    }
+
     @Volatile
     private var cancelled = false
 
@@ -108,9 +113,12 @@ class OpenAiApi(
 
             val code = c.responseCode
             if (code !in 200..299) throw ApiException(readError(c), code)
+            val msgCount = req.getAsJsonArray("messages")?.size() ?: 0
+            Log.w(DIAG_TAG, "code=$code model=$model msgs=$msgCount promptChars=${req.toString().length}")
 
             val reader = bodyReader(c)
             var sawContent = false
+            var toolQuery: String? = null
             val reasoningBuf = StringBuilder()
             while (true) {
                 if (cancelled) return false
@@ -141,6 +149,8 @@ class OpenAiApi(
                 // 部分网关把正文流在 reasoning_content（思考型模型/输出额度被思考占满），累积备用
                 val reasoning = extractContent(deltaObj?.get("reasoning_content"))
                 if (reasoning.isNotEmpty()) reasoningBuf.append(reasoning)
+                // 原生 tool_calls（部分网关思考型模型用）：正文为空时转内置搜索流程
+                extractToolCallQuery(deltaObj)?.takeIf { it.isNotBlank() }?.let { toolQuery = it }
                 // 携带 usage 的 chunk（通常为最后一个）：无论是否带 choices 都解析
                 obj?.get("usage")?.let { u ->
                     onUsage?.invoke(parseUsage(u))
@@ -148,8 +158,16 @@ class OpenAiApi(
             }
             runCatching { reader.close() }
             keepAlive = true
-            // 兜底：全程只有思考、没有正文（网关截断等）→ 用思考内容落地，避免“模型未返回有效内容”
-            if (!sawContent && reasoningBuf.isNotEmpty()) onDelta(reasoningBuf.toString())
+            if (!sawContent) {
+                if (toolQuery != null) {
+                    Log.w(DIAG_TAG, "empty content but tool_call query=$toolQuery")
+                    onDelta("function:web_search(\"query\": \"$toolQuery\")")
+                } else if (reasoningBuf.isNotEmpty()) {
+                    Log.w(DIAG_TAG, "empty content fallback to reasoning ${reasoningBuf.length}")
+                    onDelta(reasoningBuf.toString())
+                }
+            }
+            Log.w(DIAG_TAG, "done sawContent=$sawContent reasoning=${reasoningBuf.length} tool=${toolQuery != null}")
             return true
         } finally {
             if (!keepAlive) c.disconnect()
@@ -362,6 +380,31 @@ class OpenAiApi(
             }
         }
         else -> ""
+    }
+
+    /** 从原生 tool_calls 增量里提取搜索 query（function 名含 search 即视为搜索工具）。 */
+    private fun extractToolCallQuery(deltaObj: JsonObject?): String? {
+        val arr = try {
+            deltaObj?.getAsJsonArray("tool_calls")
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        for (i in 0 until arr.size()) {
+            val fn = try {
+                arr.get(i).asJsonObject.getAsJsonObject("function")
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            val name = runCatching { fn.get("name")?.asString }.getOrNull().orEmpty().lowercase()
+            if (name.isNotBlank() && !name.contains("search")) continue
+            val args = runCatching { fn.get("arguments")?.asString }.getOrNull()
+            if (args.isNullOrBlank() && name.isBlank()) continue
+            val argsObj = runCatching { JsonParser.parseString(args).asJsonObject }.getOrNull()
+            val q = argsObj?.get("query")?.asString ?: argsObj?.get("q")?.asString
+            if (args != null && argsObj == null) return args.trim().take(80)
+            if (q != null && q.isNotBlank()) return q.trim().take(80)
+        }
+        return null
     }
 
     /** Codex 同款思考深度：low/medium/high/xhigh 映射为 reasoning_effort 参数；auto/关闭 不传，兼容不支持该参数的模型。 */

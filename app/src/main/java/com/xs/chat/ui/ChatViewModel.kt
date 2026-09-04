@@ -1766,14 +1766,31 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             }
             if (!_ui.value.isStreaming) return@launch // 已被 stop() 接管
             if (completed && assistantContent(assistantId).isBlank()) {
-                // 工具调用被清洗后无有效内容（或模型空回复）：给出显式提示，避免空白气泡
-                _ui.update { st ->
-                    val idx = st.messages.indexOfLast { it.id == assistantId }
-                    if (idx < 0) return@update st
-                    val msg = st.messages[idx]
-                    st.copy(messages = st.messages.toMutableList().also {
-                        it[idx] = msg.copy(content = "⚠️ 模型未返回有效内容，请稍后重试或换个问法。", error = true)
-                    })
+                // 流式空回复：改用非流式补全再试一次（规避网关只回 tool_calls/思考、或丢包只读一半流），仍空才报错
+                val fb = runCatching {
+                    withContext(Dispatchers.IO) {
+                        val base = toolFollowMsg?.let { messages + it } ?: messages
+                        instance.completeChat(
+                            model = model.modelId,
+                            systemPrompt = buildSystemPrompt(if (toolFollowMsg != null) currentSearch else searchResult),
+                            userMessages = base.map { it.role.name.lowercase() to it.content },
+                            temperature = _ui.value.temperature
+                        )
+                    }
+                }.getOrNull()?.trim()
+                if (!fb.isNullOrBlank()) {
+                    Log.w(TAG, "empty stream: non-stream fallback ok len=${fb.length}")
+                    appendDelta(assistantId, fb)
+                } else {
+                    Log.w(TAG, "empty stream: final fallback failed pass=$pass search=${currentSearch?.length ?: 0}")
+                    _ui.update { st ->
+                        val idx = st.messages.indexOfLast { it.id == assistantId }
+                        if (idx < 0) return@update st
+                        val msg = st.messages[idx]
+                        st.copy(messages = st.messages.toMutableList().also {
+                            it[idx] = msg.copy(content = "⚠️ 模型未返回有效内容，请稍后重试或换个问法。", error = true)
+                        })
+                    }
                 }
             }
             if (completed) {

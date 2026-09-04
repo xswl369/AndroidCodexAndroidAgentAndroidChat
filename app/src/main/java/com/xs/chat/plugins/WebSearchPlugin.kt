@@ -55,22 +55,32 @@ object WebSearchPlugin {
         val q = query.trim()
         if (q.isEmpty()) return@withContext null
         builtInQuery(q)?.let { return@withContext it }
-        // 查询变体：先精简后原文（整句盲搜命中率低，精简版优先）
+        // 元宝式多路并行：所有引擎 × 所有变体并行执行，统一融合去重排序，单引擎失败不影响整轮
         val variants = queryVariants(q)
         val engines = listOf(
             "Google" to ::searchGoogle, "Sogou" to ::searchSogou, "Bing" to ::searchBingRss,
             "Baidu" to ::searchBaidu, "DuckDuckGo" to ::searchDuckDuckGo
         )
-        val failures = mutableListOf<String>()
-        for ((name, engine) in engines) {
-            for (v in variants) {
-                val refs = runCatching { engine(v) }.getOrNull()?.let { dedupe(it) }
-                if (!refs.isNullOrEmpty()) return@withContext SearchOutcome(format(v, refs), refs)
-            }
-            failures.add(name)
+        val jobs: List<kotlinx.coroutines.Deferred<Triple<String, String, List<SearchReference>?>>> =
+            engines.flatMap { (name, engine) ->
+            variants.map { v -> async(Dispatchers.IO) { Triple(name, v, runCatching { engine(v) }.getOrDefault(emptyList())) } }
         }
-        Log.w(TAG, "all engines failed: ${failures.joinToString(" / ")} query=$q")
-        null
+        val merged = mutableListOf<SearchReference>()
+        for (job in jobs) {
+            val (name, v, refs) = job.await()
+            if (!refs.isNullOrEmpty()) {
+                val hitCount = refs.size
+                Log.w(TAG, "engine ok: $name query=$v hits=$hitCount")
+                merged += refs
+            }
+        }
+        if (merged.isEmpty()) {
+            Log.w(TAG, "all engines failed query=$q variants=${variants.joinToString("|")}")
+            return@withContext null
+        }
+        val ranked = rankRefs(merged, keywordVariants(q))
+        Log.w(TAG, "merge done raw=${merged.size} ranked=${ranked.size} query=$q")
+        SearchOutcome(format(variants.first(), ranked), ranked)
     }
 
     /** 跨引擎/页内去重：同 URL 只保留第一条（优先带摘要的）。 */
@@ -80,6 +90,38 @@ object WebSearchPlugin {
             val key = r.url.lowercase(Locale.ROOT).substringBefore('#').removeSuffix("/")
             key.isBlank() || seen.add(key)
         }
+    }
+
+    /** 关键词分解：拆出 2-6 字词用于相关度排序（元宝式查询理化）。 */
+    private fun keywordVariants(raw: String): List<String> {
+        val clean = stripQueryNoise(raw)
+        return clean.split(Regex("[,，；、:：\\s]+"))
+            .flatMap { seg ->
+                val t = seg.trim()
+                if (t.length in 2..6) listOf(t) else if (t.length > 6) listOf(t.take(4), t.takeLast(6)) else emptyList()
+            }
+            .distinct()
+            .take(6)
+    }
+
+    /** 融合排序：URL 跨引擎去重（保留首次命中），标题/摘要/链接关键词加权后取前 MAX_RESULTS。 */
+    private fun rankRefs(raw: List<SearchReference>, keys: List<String>): List<SearchReference> {
+        val seen = LinkedHashMap<String, SearchReference>()
+        for (r in raw) {
+            val key = r.url.lowercase(Locale.ROOT).substringBefore('#').removeSuffix("/")
+            if (key.isBlank() || seen.containsKey(key)) continue
+            seen[key] = r
+        }
+        return seen.values.map { r ->
+            var score = 0.0
+            for (k in keys) {
+                val kw = k.lowercase(Locale.ROOT)
+                if (r.title.lowercase(Locale.ROOT).contains(kw)) score += 3.0
+                else if (r.snippet.lowercase(Locale.ROOT).contains(kw)) score += 1.5
+                if (r.url.lowercase(Locale.ROOT).contains(kw)) score += 1.0
+            }
+            score to r
+        }.sortedByDescending { it.first }.take(MAX_RESULTS).map { it.second }
     }
 
     /** 查询变体：先精简（去客套/填充/汇总类词），再回退原文，最多 2 条。 */
