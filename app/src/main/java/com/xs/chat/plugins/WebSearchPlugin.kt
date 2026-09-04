@@ -302,7 +302,9 @@ object WebSearchPlugin {
         if (lower.contains("黄历") || lower.contains("宜忌") || lower.contains("吉日")) {
             return huangliOutcome()
         }
-        if (lower.contains("人民日报") || (lower.contains("新闻") && q.length <= 12)) {
+        if (lower.contains("人民日报") || lower.contains("新闻") || lower.contains("热点") ||
+            lower.contains("热搜") || lower.contains("热门") || lower.contains("头条") || lower.contains("要闻")
+        ) {
             return peopleDailyOutcome()
         }
         return null
@@ -440,17 +442,21 @@ object WebSearchPlugin {
             val xml = httpGet("http://www.people.com.cn/rss/$code.xml") ?: continue
             var per = 0
             for (item in Regex("<item>(.*?)</item>", RegexOption.DOT_MATCHES_ALL).findAll(xml)) {
-                if (per >= 2 || refs.size >= 8) break
+                if (per >= 2 || refs.size >= 10) break
                 val title = tag(item.groupValues[1], "title") ?: continue
                 val link = tag(item.groupValues[1], "link") ?: continue
-                refs.add(SearchReference("[$name] $title", link, ""))
+                val desc = tag(item.groupValues[1], "description").orEmpty().take(130)
+                refs.add(SearchReference("[$name] $title", link, desc))
                 per++
             }
-            if (refs.size >= 8) break
+            if (refs.size >= 10) break
         }
         if (refs.isEmpty()) return null
         val sb = StringBuilder("📰 人民日报·最新新闻：")
-        refs.forEachIndexed { i, r -> sb.append("\n").append(i + 1).append(". ").append(r.title) }
+        refs.forEachIndexed { i, r ->
+            sb.append("\n").append(i + 1).append(". ").append(r.title)
+            if (r.snippet.isNotBlank()) sb.append("：").append(r.snippet)
+        }
         return SearchOutcome(sb.toString(), refs)
     }
 }
