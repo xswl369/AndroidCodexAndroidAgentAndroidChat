@@ -370,6 +370,8 @@ object WebSearchPlugin {
     private fun builtInQuery(query: String): SearchOutcome? {
         val q = query.trim()
         val lower = q.lowercase(Locale.ROOT)
+        // 内置知识快答（计算/换算/星座/节气/省份/元素等）：显式“查一下…”也直接命中
+        KnowledgeBase.answer(q)?.let { return SearchOutcome(it, emptyList()) }
         // 球迷屋：指定站点直接爬赛程，不依赖搜索引擎
         if (lower.contains("球迷屋") || lower.contains("qiumiwu")) {
             return qiumiwuOutcome(q)

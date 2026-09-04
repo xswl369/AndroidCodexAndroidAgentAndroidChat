@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.text.selection.SelectionState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,6 +40,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -81,6 +83,28 @@ private fun buildCallLabel(lang: String, meta: CallMeta): String {
 private fun formatTokens(n: Long): String = when {
     n >= 1000 -> String.format("%.1fk", n / 1000.0)
     else -> n.toString()
+}
+
+/** 当前已挂载消息的可选文字状态集合：点击消息空白处时统一取消所有选区。 */
+internal object ActiveTextSelection {
+    private val states = mutableSetOf<SelectionState>()
+    fun clearAll() = states.forEach { it.clear() }
+    fun register(state: SelectionState) { states.add(state) }
+    fun unregister(state: SelectionState) { states.remove(state) }
+}
+
+/** 可选文本容器：长按选中文字；点击消息空白处自动取消选区（Compose 默认不会收手）。 */
+@Composable
+internal fun SelectableMessage(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val state = remember { SelectionState() }
+    DisposableEffect(state) {
+        ActiveTextSelection.register(state)
+        onDispose { ActiveTextSelection.unregister(state) }
+    }
+    SelectionContainer(state = state, modifier = modifier, content = content)
 }
 
 /** 消息菜单：菜单项固定，展开状态由父级控制（竖三点按钮与长按共用）。 */
@@ -136,7 +160,7 @@ fun UserMessageBubble(
                 }
                 if (content.isNotBlank()) {
                     // 长按选中文字并弹出复制菜单（位置跟随长按处）
-                    SelectionContainer {
+                    SelectableMessage {
                         Text(WebSearchPlugin.stripToolMarkup(content), style = MaterialTheme.typography.bodyMedium)
                     }
                 }
@@ -247,11 +271,10 @@ fun AssistantMessageView(
                     Spacer(Modifier.height(6.dp))
                 }
                 // 长按选中文字并就地弹出复制菜单
-                SelectionContainer {
+                SelectableMessage(Modifier.fillMaxWidth()) {
                     MarkdownText(
                         markdown = WebSearchPlugin.stripToolMarkup(message.content),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
-                        modifier = Modifier.fillMaxWidth(),
                         onRunCode = onRunCode,
                         onCopyCode = onCopyCode
                     )
@@ -445,6 +468,8 @@ private fun SearchReferencesCard(references: List<SearchReference>) {
         }
     }
 }
+
+
 
 
 

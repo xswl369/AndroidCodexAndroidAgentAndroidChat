@@ -33,6 +33,7 @@ import com.xs.chat.plugins.VideoPlugin
 import com.xs.chat.plugins.AppIndexPlugin
 import com.xs.chat.plugins.DeviceControlPlugin
 import com.xs.chat.plugins.LocalIntentClassifier
+import com.xs.chat.plugins.KnowledgeBase
 import com.xs.chat.plugins.WebSearchPlugin
 import com.xs.chat.plugins.PluginRegistry
 import com.xs.chat.plugins.PluginRegistry.PluginInfo
@@ -557,6 +558,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         stop()
         MemoryPlugin.log(getApplication(), "发送消息", content.ifBlank { "（图片/文件）" }.take(60))
+
+        // 内置知识快答（计算器/单位换算/星座/节气/省份/元素…离线毫秒级直答，不依赖模型与网络）
+        KnowledgeBase.answer(content)?.let { ans ->
+            builtInReply(content, ans)
+            return
+        }
 
         // 内置验证命令（自动化/ADB 可测，不依赖模型）：check news / check lunar / check huangli / check date
         if (content.startsWith("check", ignoreCase = true)) {
@@ -1257,6 +1264,17 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 内置知识快答：把本地直答结果作为普通 AI 回复展示（不依赖模型 / 网络）。 */
+    private fun builtInReply(userContent: String, answer: String) {
+        pluginJob = viewModelScope.launch {
+            val assistantId = beginPluginWork(userContent, emptyList())
+            _ui.update { it.copy(isStreaming = true) }
+            MemoryPlugin.log(getApplication(), "内置知识快答", answer.replace("\n", " ").take(40))
+            completeAssistant(assistantId, answer, emptyList())
+            finishPluginWork()
+        }
+    }
+
     /**
      * 联网搜索主流程（元宝同款）：气泡顶部先出「正在全网搜索…」状态，
      * 搜索完成后变为「已找到 N 篇相关内容，正在生成回答…」，
@@ -1727,7 +1745,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     clearAssistantContent(assistantId)
                     toolFollowMsg = ChatMessage(
                         role = Role.USER,
-                        content = "请直接综合以上联网搜索结果，回答我最初提出的问题；不要输出任何工具调用标记或搜索过程描述。",
+                        content = "请直接综合以上联网搜索结果，把答案完整写出来：包含具体事实、数字、时间与结论，正文要独立可读，禁止出现任何网址、链接或“请自行查看”的表达；不要输出任何工具调用标记或搜索过程描述。",
                         attachments = emptyList()
                     )
                     }
@@ -1769,6 +1787,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 )
                 if (!currentRefs.isNullOrEmpty()) attachReferences(assistantId, currentRefs)
             }
+            // 兜底：模型偷懒只回链接列表时，用搜索材料重写成一版完整答案（不影响参考资料卡片）
+            if (completed && !currentRefs.isNullOrEmpty() && !currentSearch.isNullOrBlank()) {
+                val raw = assistantContent(assistantId)
+                if (looksLikeLinkList(raw)) {
+                    val rewritten = withContext(Dispatchers.IO) {
+                        rewriteLinkListAnswer(raw, currentSearch)
+                    }
+                    if (!rewritten.isNullOrBlank()) {
+                        _ui.update { st ->
+                            val idx = st.messages.indexOfLast { it.id == assistantId }
+                            if (idx < 0) return@update st
+                            val list = st.messages.toMutableList()
+                            list[idx] = list[idx].copy(content = rewritten)
+                            st.copy(messages = list)
+                        }
+                        MemoryPlugin.log(getApplication(), "链接回答已重写", raw.take(40))
+                    }
+                }
+            }
             _ui.update { it.copy(isStreaming = false) }
             streamingJob = null
             api = null
@@ -1800,11 +1837,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
             回答规则：
             1. 优先基于搜索结果回答；引用位置用 [N] 数字编号标注（如 [1]、[2]），编号必须与 <联网搜索结果> 中 [来源N] 的序号一一对应，禁止编造不存在的编号；
-            2. 若搜索结果与问题无关或信息不足，明确说明“联网搜索未找到直接信息”，再基于自身知识谨慎回答，不要编造结果中不存在的细节；
+            2. 【硬性要求】必须“直接给答案”：把每条来源里的具体事实、数字、时间、结论展开写进正文，用户看完回答就不需要再点任何链接；禁止把回答写成链接清单，禁止说“请查看链接”“详情见链接”“你自己打开看看”之类的推诿话术；
             3. 涉及时间、数字、名称时以搜索结果为准；多个来源矛盾时汇总差异并说明；
             4. 参考文献可能远多于 10 条，不要只挑前几条：汇总/列举/对比类提问应尽量覆盖全部相关来源（编号可顺延到 [10]+）；无关来源可直接跳过；
             5. 用与用户提问相同的语言作答，保持自然流畅；
-            6. 不要在回答末尾手动列出网址或参考文献（界面会自动展示参考资料列表），直接结束正文；禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
+            7. 不要在回答末尾手动列出网址或参考文献（界面会自动展示参考资料列表），正文结束后直接结束；禁止输出任何工具调用标记（如 <|tool_call>、<tool_call>、function:web_search 等）。
         """.trimIndent()
         return if (base == null) control else "$base\n\n$control"
     }
@@ -1854,6 +1891,26 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (msg.content.isEmpty()) return@update st
             st.copy(messages = st.messages.toMutableList().also { it[idx] = msg.copy(content = "") })
         }
+    }
+
+    /** 判断回答是否退化成“只见链接不见正文”（超过一半有效行是网址时判定）。 */
+    private fun looksLikeLinkList(text: String): Boolean {
+        val lines = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        if (lines.isEmpty()) return false
+        val urlish = lines.count { Regex("""^(?:https?://|www\.|ftp://|\d+\s*[.、．]\s*https?://)""").containsMatchIn(it) }
+        return urlish >= 2 && urlish >= lines.size / 2
+    }
+
+    /** 将纯链接回答重写为完整正文（单次非流式调用，失败返回 null 保持原样）。 */
+    private fun rewriteLinkListAnswer(raw: String, searchText: String): String? {
+        val model = _ui.value.activeModel ?: return null
+        return runCatching {
+            val system = "你是联网搜索答案整理器。下面给了一份只罗列了链接、没有展开内容的回答草稿。请根据《搜索材料》把关键内容提炼出来，改写成一段信息量完整、直接可读的中文正文：" +
+                "包含具体数字、时间、结论与要点；禁止出现任何网址/链接，禁止出现“点开看看”“见链接”等字样，禁止再罗列链接列表。\n\n" +
+                "《搜索材料》\n${searchText.take(6000)}\n\n《回答草稿》\n${raw.take(4000)}"
+            val api = OpenAiApi(model.baseUrl, model.apiKey, connectTimeoutMs = 10_000, readTimeoutMs = 60_000)
+            api.completeChat(model.modelId, system, listOf("user" to "请输出整理后的最终答案"), 0.3f)
+        }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     private fun appendDelta(assistantId: String, delta: String) {

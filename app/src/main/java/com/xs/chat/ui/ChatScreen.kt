@@ -24,6 +24,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +57,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowDownward
@@ -361,7 +363,12 @@ fun ChatScreen(
                         state = listState,
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                         verticalArrangement = Arrangement.spacedBy(18.dp),
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // 点击消息空白处：取消长按文字选区（选中状态下才生效）
+                            .pointerInput(Unit) {
+                                detectTapGestures(onTap = { ActiveTextSelection.clearAll() })
+                            }
                     ) {
                         itemsIndexed(state.messages, key = { _, m -> m.id }) { index, message ->
                             when (message.role) {
@@ -1323,3 +1330,4 @@ private suspend fun scrollToStreamEnd(listState: LazyListState, index: Int) {
     val overflow = last.size - info.viewportSize.height
     if (overflow > 0) listState.scrollToItem(index, overflow)
 }
+
