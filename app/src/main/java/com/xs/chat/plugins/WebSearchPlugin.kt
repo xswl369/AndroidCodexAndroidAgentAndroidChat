@@ -3,6 +3,8 @@ package com.xs.chat.plugins
 import android.util.Log
 import com.xs.chat.data.SearchReference
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,9 +40,11 @@ object WebSearchPlugin {
     private const val TIMEOUT_MS = 5000
     /** Google 直连国内常不通（超时即自动降级到后续引擎），给更短超时避免拖慢整轮搜索。 */
     private const val GOOGLE_TIMEOUT_MS = 4000
-    private const val MAX_RESULTS = 8
-    /** 只对前 3 条结果抓取正文（单条 3s 超时），避免串行抓取拖慢整体搜索。 */
-    private const val BODY_FETCH_LIMIT = 3
+    /** 条数不再固定：引擎最多取 50 条（防御性上限），全部进入参考资料与模型上下文。 */
+    private const val MAX_RESULTS = 50
+    /** 前 15 条优先抓正文（并发执行），其余保留标题+摘要；摘要/正文字符放宽到接近全文。 */
+    private const val BODY_FETCH_LIMIT = 15
+    private const val SNIPPET_LIMIT = 300
     private const val MOBILE_UA = "Mozilla/5.0 (Linux; Android 13; xs-chat) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
     private const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -60,13 +64,22 @@ object WebSearchPlugin {
         val failures = mutableListOf<String>()
         for ((name, engine) in engines) {
             for (v in variants) {
-                val refs = runCatching { engine(v) }.getOrNull()
+                val refs = runCatching { engine(v) }.getOrNull()?.let { dedupe(it) }
                 if (!refs.isNullOrEmpty()) return@withContext SearchOutcome(format(v, refs), refs)
             }
             failures.add(name)
         }
         Log.w(TAG, "all engines failed: ${failures.joinToString(" / ")} query=$q")
         null
+    }
+
+    /** 跨引擎/页内去重：同 URL 只保留第一条（优先带摘要的）。 */
+    private fun dedupe(refs: List<SearchReference>): List<SearchReference> {
+        val seen = HashSet<String>()
+        return refs.filter { r ->
+            val key = r.url.lowercase(Locale.ROOT).substringBefore('#').removeSuffix("/")
+            key.isBlank() || seen.add(key)
+        }
     }
 
     /** 查询变体：先精简（去客套/填充/汇总类词），再回退原文，最多 2 条。 */
@@ -90,16 +103,18 @@ object WebSearchPlugin {
 
     /** Google（优先尝试，国内直连常不通会超时自动回退）：解析 /url?q= 真实链接 + h3 标题。 */
     private fun searchGoogle(query: String): List<SearchReference>? {
-        val url = "https://www.google.com/search?q=" + encode(query) + "&num=10&hl=zh-CN"
+        val url = "https://www.google.com/search?q=" + encode(query) + "&num=20&hl=zh-CN"
         val html = httpGet(url, GOOGLE_TIMEOUT_MS, DESKTOP_UA) ?: return null
         if (html.contains("unusual traffic") || html.contains("not a robot") ||
             html.contains("captcha") || html.contains("请输入验证码") || !html.contains("<h3")
         ) return null
         val hits = mutableListOf<SearchReference>()
+        val seenHref = HashSet<String>()
         val blockRe = Regex("<a[^>]+href=\"/url\\?q=([^&\"']+)[^>]*>(.*?)</a>", RegexOption.DOT_MATCHES_ALL)
         for (m in blockRe.findAll(html)) {
             if (hits.size >= MAX_RESULTS) break
             val target = m.groupValues[1].replace("&amp;", "&")
+            if (!seenHref.add(target)) continue
             val title = stripHtml(m.groupValues[2]).trim()
             if (!target.startsWith("https://") && !target.startsWith("http://")) continue
             if (title.isEmpty() || title.contains("Google 翻译")) continue
@@ -156,7 +171,7 @@ object WebSearchPlugin {
 
     /** Baidu 兜底：解析常规网页结果页（国内网络无 key 可用）。 */
     private fun searchBaidu(query: String): List<SearchReference>? {
-        val url = "https://www.baidu.com/s?wd=" + encode(query) + "&rn=10&ie=utf-8"
+        val url = "https://www.baidu.com/s?wd=" + encode(query) + "&rn=50&ie=utf-8"
         val html = httpGet(url) ?: return null
         val re = Regex(
             """<h3[^>]*>\s*<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>\s*</h3>""",
@@ -211,18 +226,28 @@ object WebSearchPlugin {
         return hits.ifEmpty { null }
     }
 
-    /** 序列化为喂给模型的编号文本：编号顺序与 refs 一致（UI 参考资料编号一一对应）。 */
-    private fun format(query: String, refs: List<SearchReference>): String {
+    /** 序列化为喂给模型的编号文本：编号顺序与 refs 一致（UI 参考资料编号一一对应），全部条目录入。 */
+    private suspend fun format(query: String, refs: List<SearchReference>): String = coroutineScope {
+        // 正文抓取：前 BODY_FETCH_LIMIT 条按 4 条一组并发（单条 3s 超时，失败静默）
+        val bodies: Map<String, String> = refs
+            .take(BODY_FETCH_LIMIT)
+            .chunked(4)
+            .flatMap { batch ->
+                batch.map { ref -> async(Dispatchers.IO) { ref.url to (fetchBody(ref.url) ?: "") } }
+                    .map { it.await() }
+            }
+            .filter { it.second.isNotBlank() }
+            .toMap()
         val sb = StringBuilder("🔍 搜索：").append(query)
-        refs.take(MAX_RESULTS).forEachIndexed { i, r ->
+        refs.forEachIndexed { i, r ->
             sb.append("\n\n[来源").append(i + 1).append("] ").append(r.title)
             if (r.url.isNotBlank()) {
                 sb.append("\n链接：").append(r.url)
-                if (i < BODY_FETCH_LIMIT) fetchBody(r.url)?.let { sb.append("\n内容：").append(it) }
+                bodies[r.url]?.let { sb.append("\n内容：").append(it) }
             }
-            if (r.snippet.isNotBlank()) sb.append("\n摘要：").append(r.snippet.take(220))
+            if (r.snippet.isNotBlank()) sb.append("\n摘要：").append(r.snippet.take(SNIPPET_LIMIT))
         }
-        return sb.toString()
+        sb.toString()
     }
 
     /** 从 RSS item 里取单标签内容（去 CDATA / HTML 实体）。 */
@@ -231,7 +256,7 @@ object WebSearchPlugin {
         return stripHtml(m.groupValues[1]).trim().ifEmpty { null }
     }
 
-    /** 抓取正文：剥离 script/style/nav/footer 等噪声后取前 220 字（3s 超时，失败静默）。 */
+    /** 抓取正文：剥离 script/style/nav/footer 等噪声后取前 400 字（3s 超时，失败静默）。 */
     private fun fetchBody(url: String): String? {
         if (!url.startsWith("http")) return null
         // 搜索引擎跳转链接（百度 /link?url=、搜狗 /link）实为重定向页，抓正文无意义，直接跳过
@@ -242,7 +267,7 @@ object WebSearchPlugin {
             html.replace(Regex("""(?is)<(script|style|noscript|nav|header|footer|aside)[^>]*>.*?</\1>"""), " ")
         )
         if (text.isBlank()) return null
-        return text.replace(Regex("""\s+"""), " ").trim().take(220)
+        return text.replace(Regex("""\s+"""), " ").trim().take(400)
     }
 
     private fun encode(s: String): String = URLEncoder.encode(s, "UTF-8")

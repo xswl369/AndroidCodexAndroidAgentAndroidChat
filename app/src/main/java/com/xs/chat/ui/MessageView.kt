@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.OpenInNew
@@ -52,6 +54,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.painter.BitmapPainter
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.xs.chat.R
@@ -344,9 +347,11 @@ fun AssistantMessageView(
 @Composable
 private fun SearchReferencesCard(references: List<SearchReference>) {
     val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    val visible = if (expanded) references else references.take(6)
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "参考资料",
+            "参考资料（共 ${references.size} 条）",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -357,7 +362,7 @@ private fun SearchReferencesCard(references: List<SearchReference>) {
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
         ) {
-            references.forEachIndexed { i, ref ->
+            visible.forEachIndexed { i, ref ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -387,10 +392,10 @@ private fun SearchReferencesCard(references: List<SearchReference>) {
                         if (ref.domain.isNotBlank()) {
                             Spacer(Modifier.height(1.dp))
                             Text(
-                                ref.domain,
+                                ref.domain + if (ref.snippet.isNotBlank()) " · " + ref.snippet.replace(Regex("\\s+"), " ").take(90) else "",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
@@ -403,10 +408,37 @@ private fun SearchReferencesCard(references: List<SearchReference>) {
                         modifier = Modifier.size(14.dp)
                     )
                 }
-                if (i != references.lastIndex) {
+                if (i != visible.lastIndex) {
                     HorizontalDivider(
                         modifier = Modifier.padding(horizontal = 10.dp),
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                }
+            }
+            if (references.size > 6) {
+                HorizontalDivider(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { expanded = !expanded }
+                        .padding(vertical = 6.dp)
+                ) {
+                    Text(
+                        if (expanded) "收起" else "展开全部 ${references.size} 条",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center
+                    )
+                    Icon(
+                        if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                        contentDescription = if (expanded) "收起" else "展开",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
                     )
                 }
             }
