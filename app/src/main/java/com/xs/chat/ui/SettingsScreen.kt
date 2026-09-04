@@ -1168,7 +1168,7 @@ private fun MediaSettingsSection(state: ChatUiState, vm: ChatViewModel) {
         label = Lang.t(lang, "video_resolution"),
         value = videoSize,
         onValueChange = { videoSize = it; feedback = "" },
-        presets = listOf("720P", "960P", "2K", "1280x720", "1280x960", "1920x1080", "2560x1440", "3840x2160", "720x1280", "1080x1920", "1440x2560"),
+        presets = listOf("720P", "960P", "1080P", "2K", "1280x720", "1280x960", "1920x1080", "2560x1440", "3840x2160", "720x1280", "1080x1920", "1440x2560"),
         onConfirm = confirm,
         valid = videoSizeOk
     )
@@ -1200,13 +1200,15 @@ private fun normalizeVideoSize(input: String): String? {
     when (t.uppercase()) {
         "720P" -> return "720P"
         "960P" -> return "960P"
+        "1080P" -> return "1080P"
         "2K" -> return "2K"
     }
     val m = Regex("(\\d+)\\s*[xX×]\\s*(\\d+)").find(t) ?: return null
     val h = m.groupValues[2].toInt()
     return when {
         h <= 720 -> "720P"
-        h <= 1080 -> "960P"
+        h <= 960 -> "960P"
+        h <= 1080 -> "1080P"
         else -> "2K"
     }
 }

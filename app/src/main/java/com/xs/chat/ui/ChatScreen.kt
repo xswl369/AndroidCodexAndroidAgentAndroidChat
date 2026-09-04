@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.ui.draw.clip
@@ -214,18 +215,20 @@ fun ChatScreen(
         derivedStateOf {
             val info = listState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
-            last.index >= info.totalItemsCount - 2
+            if (last.index < info.totalItemsCount - 2) return@derivedStateOf false
+            // 超高消息（长回答）：只有滚到消息末尾附近才算“已到底”，否则跟随滚动会把视图钉在首行
+            (last.offset + last.size) - info.viewportEndOffset < info.viewportSize.height / 3
         }
     }
 
     // 新消息或会话切换时滚到底部
     LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) listState.scrollToItem(state.messages.size - 1)
+        if (state.messages.isNotEmpty()) scrollToStreamEnd(listState, state.messages.size - 1)
     }
     // 流式输出时，若用户停留在底部则跟随滚动
     LaunchedEffect(state.isStreaming, state.messages.lastOrNull()?.content?.length) {
         if (state.isStreaming && nearBottom && state.messages.isNotEmpty()) {
-            listState.scrollToItem(state.messages.size - 1)
+            scrollToStreamEnd(listState, state.messages.size - 1)
         }
     }
     // 提示自动消失
@@ -385,7 +388,8 @@ fun ChatScreen(
                                     onTranslate = { vm.translateMessage(index) },
                                     onShare = { shareText(message.content) },
                                     onDelete = { vm.deleteMessage(index) },
-                                    onRunCode = { lang, code -> vm.runCodeBlock(lang, code) }
+                                    onRunCode = { lang, code -> vm.runCodeBlock(lang, code) },
+                                    onCopyCode = { code -> copyText(code) }
                                 )
                                 Role.SYSTEM -> {}
                             }
@@ -1304,4 +1308,14 @@ private fun ReasoningEffortPill(effort: String, onChange: (String) -> Unit) {
             }
         }
     }
+}
+
+/** 滚动到最后一条消息的末尾：消息高于一屏时 scrollToItem 只对齐其首行，需再滚到内容尾部。 */
+private suspend fun scrollToStreamEnd(listState: LazyListState, index: Int) {
+    listState.scrollToItem(index)
+    val info = listState.layoutInfo
+    val last = info.visibleItemsInfo.lastOrNull { it.index == index } ?: return
+    // 消息高于一屏时，scrollToItem 只对齐其顶行；用 scrollOffset 直接把内容滚到消息末尾
+    val overflow = last.size - info.viewportSize.height
+    if (overflow > 0) listState.scrollToItem(index, overflow)
 }

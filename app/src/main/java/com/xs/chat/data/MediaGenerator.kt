@@ -151,7 +151,7 @@ object MediaGenerator {
             addProperty("model", model.modelId)
             addProperty("prompt", prompt)
             // OpenAI 契约：720p/1080p；时长 5s/10s/15s（收敛到合法档）
-            addProperty("size", if (size.trim().equals("2K", true)) "1080p" else "720p")
+            addProperty("size", if (size.trim().equals("2K", true) || size.trim().equals("1080P", true)) "1080p" else "720p")
             addProperty("duration", seconds.coerceIn(5, 15).toString() + "s")
             if (firstFrame != null) {
                 add("input_reference", JsonArray().apply {
@@ -213,7 +213,7 @@ object MediaGenerator {
             add("generationConfig", JsonObject().apply {
                 add("responseModalities", JsonArray().apply { add("VIDEO"); add("TEXT") })
                 add("videoConfig", JsonObject().apply {
-                    addProperty("resolution", if (size.trim().equals("2K", true)) "1080p" else "720p")
+                    addProperty("resolution", if (size.trim().equals("2K", true) || size.trim().equals("1080P", true)) "1080p" else "720p")
                     addProperty("aspectRatio", "16:9")
                 })
             })
@@ -299,6 +299,7 @@ object MediaGenerator {
     private fun v2Resolution(size: String): Pair<Int, Int> = when (size.trim().uppercase(Locale.ROOT)) {
         "720P" -> 1280 to 720
         "960P" -> 1280 to 960
+        "1080P" -> 1920 to 1080
         "2K" -> 1920 to 1080
         else -> 1152 to 768
     }

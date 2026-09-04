@@ -187,7 +187,8 @@ fun AssistantMessageView(
     onTranslate: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
-    onRunCode: (lang: String, code: String) -> Unit = { _, _ -> }
+    onRunCode: (lang: String, code: String) -> Unit = { _, _ -> },
+    onCopyCode: (String) -> Unit = {}
 ) {
     val lang = LocalLanguage.current
     val primary = MaterialTheme.colorScheme.primary
@@ -245,7 +246,8 @@ fun AssistantMessageView(
                         markdown = WebSearchPlugin.stripToolMarkup(message.content),
                         textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
                         modifier = Modifier.fillMaxWidth(),
-                        onRunCode = onRunCode
+                        onRunCode = onRunCode,
+                        onCopyCode = onCopyCode
                     )
                 }
                 if (isStreaming) {
