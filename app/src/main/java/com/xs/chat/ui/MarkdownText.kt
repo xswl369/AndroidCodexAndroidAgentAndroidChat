@@ -158,7 +158,8 @@ object Markdown {
                         val itemOrdered = marker.first().isDigit() ||
                             "一二三四五六七八九十".contains(marker.first())
                         if (itemOrdered != ordered) break
-                        markers += marker.trimEnd('.', '、')
+                        // 保留原始编号（含 "1." "1、" "一、"），渲染时不再统一改写
+                        markers += marker
                         var rest = item.groupValues[3]
                         if (item.groupValues[1].length == 2) rest = rest.replaceFirst("**", "")
                         items += parseInline(rest)
@@ -335,22 +336,19 @@ fun MarkdownText(
         blocks.forEach { block ->
             when (block) {
                 is Block.Paragraph -> InlineText(block.spans, textStyle)
+                // 标题不再放大字号（保持与正文同字体同大小，仅加粗），避免破坏整体排版观感
                 is Block.Heading -> InlineText(
                     block.spans,
-                    textStyle.copy(
-                        fontSize = when (block.level) {
-                            1 -> 22.sp; 2 -> 19.sp; 3 -> 17.sp; else -> 16.sp
-                        },
-                        fontWeight = FontWeight.Bold
-                    )
+                    textStyle.copy(fontWeight = FontWeight.Bold)
                 )
                 is Block.ListBlock -> {
                     block.items.forEachIndexed { idx, spans ->
                         Row(Modifier.padding(start = 6.dp, top = 2.dp, bottom = 2.dp)) {
                             Text(
-                                if (block.ordered) "${idx + 1}." else "•",
+                                // 保留模型原始编号/序号，不重新编号，保证“按原顺序展示”
+                                block.markers.getOrElse(idx) { if (block.ordered) "${idx + 1}" else "•" },
                                 style = textStyle.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.width(36.dp)
+                                modifier = Modifier.width(44.dp)
                             )
                             InlineText(spans, textStyle)
                         }

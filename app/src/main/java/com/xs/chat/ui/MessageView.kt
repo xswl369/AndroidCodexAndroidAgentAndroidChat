@@ -392,114 +392,96 @@ fun AssistantMessageView(
     }
 }
 
-/** 联网搜索参考资料（元宝同款）：编号 [N] + 标题 + 域名，点击打开原文。 */
+/** 联网搜索参考资料（元宝同款）：默认折叠只显示标题栏，点击后才展开全部 [N] 条目，点条目打开原文。 */
 @Composable
 private fun SearchReferencesCard(references: List<SearchReference>) {
     val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
-    val visible = if (expanded) references else references.take(6)
     Column(Modifier.fillMaxWidth()) {
-        Text(
-            "参考资料（共 ${references.size} 条）",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(4.dp))
-        Column(
-            Modifier
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
-            visible.forEachIndexed { i, ref ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable {
-                            val uri = ref.url.trim()
-                            if (uri.startsWith("http")) {
-                                WebBrowserActivity.open(context, uri)
+            Text(
+                "参考资料（共 ${references.size} 条）",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(4.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            ) {
+                references.forEachIndexed { i, ref ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val uri = ref.url.trim()
+                                if (uri.startsWith("http")) {
+                                    WebBrowserActivity.open(context, uri)
+                                }
                             }
-                        }
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        "[${i + 1}]",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Column(Modifier.weight(1f)) {
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
                         Text(
-                            ref.title,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            "[${i + 1}]",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
                         )
-                        if (ref.domain.isNotBlank()) {
-                            Spacer(Modifier.height(1.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
                             Text(
-                                ref.domain + if (ref.snippet.isNotBlank()) " · " + ref.snippet.replace(Regex("\\s+"), " ").take(90) else "",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                ref.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
+                            if (ref.domain.isNotBlank()) {
+                                Spacer(Modifier.height(1.dp))
+                                Text(
+                                    ref.domain + if (ref.snippet.isNotBlank()) " · " + ref.snippet.replace(Regex("\\s+"), " ").take(90) else "",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
+                        Spacer(Modifier.width(4.dp))
+                        Icon(
+                            Icons.Rounded.OpenInNew,
+                            contentDescription = "打开",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp)
+                        )
                     }
-                    Spacer(Modifier.width(4.dp))
-                    Icon(
-                        Icons.Rounded.OpenInNew,
-                        contentDescription = "打开",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-                if (i != visible.lastIndex) {
-                    HorizontalDivider(
-                        modifier = Modifier.padding(horizontal = 10.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                    )
-                }
-            }
-            if (references.size > 6) {
-                HorizontalDivider(
-                    modifier = Modifier.padding(horizontal = 10.dp),
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { expanded = !expanded }
-                        .padding(vertical = 6.dp)
-                ) {
-                    Text(
-                        if (expanded) "收起" else "展开全部 ${references.size} 条",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f),
-                        textAlign = TextAlign.Center
-                    )
-                    Icon(
-                        if (expanded) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
-                        contentDescription = if (expanded) "收起" else "展开",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    if (i != references.lastIndex) {
+                        HorizontalDivider(
+                            modifier = Modifier.padding(horizontal = 10.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                    }
                 }
             }
         }
     }
 }
-
-
-
-
-
-
-
-
-
