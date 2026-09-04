@@ -270,8 +270,8 @@ fun AssistantMessageView(
                     }
                     Spacer(Modifier.height(6.dp))
                 }
-                // 思考过程预览（高思考档下避免“死机”错觉）
-                message.reasoning.takeIf { it.isNotBlank() }?.let { rz ->
+                // 思考过程预览：固定 3 行高度展示，正文一出来立刻收起、只显示结果
+                message.reasoning.takeIf { it.isNotBlank() && message.content.isBlank() }?.let { rz ->
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
                         shape = RoundedCornerShape(10.dp),
@@ -279,7 +279,7 @@ fun AssistantMessageView(
                     ) {
                         Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
                             Text(
-                                if (isStreaming) "🤔 思考中…" else "💭 思考过程",
+                                "🤔 思考中…",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = primary
                             )
@@ -288,6 +288,7 @@ fun AssistantMessageView(
                                 rz,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                minLines = 3,
                                 maxLines = 3,
                                 overflow = TextOverflow.Ellipsis
                             )
