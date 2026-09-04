@@ -1,5 +1,6 @@
 package com.xs.chat.data
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.BufferedReader
@@ -109,6 +110,8 @@ class OpenAiApi(
             if (code !in 200..299) throw ApiException(readError(c), code)
 
             val reader = bodyReader(c)
+            var sawContent = false
+            val reasoningBuf = StringBuilder()
             while (true) {
                 if (cancelled) return false
                 val line = reader.readLine() ?: break
@@ -121,17 +124,23 @@ class OpenAiApi(
                 } catch (e: Exception) {
                     null
                 }
-                val choices = obj?.getAsJsonArray("choices")
-                val delta = try {
-                    choices?.takeIf { it.size() > 0 }
+                val deltaObj = try {
+                    obj?.getAsJsonArray("choices")
+                        ?.takeIf { it.size() > 0 }
                         ?.get(0)?.asJsonObject
                         ?.getAsJsonObject("delta")
-                        ?.get("content")?.asString
-                        ?: ""
                 } catch (e: Exception) {
-                    ""
+                    null
                 }
-                if (delta.isNotEmpty()) onDelta(delta)
+                // content 兼容 string 与 JSON 数组分片：JSON 数组用 asString 会整片抛错，导致整条回复被丢
+                val content = extractContent(deltaObj?.get("content"))
+                if (content.isNotEmpty()) {
+                    sawContent = true
+                    onDelta(content)
+                }
+                // 部分网关把正文流在 reasoning_content（思考型模型/输出额度被思考占满），累积备用
+                val reasoning = extractContent(deltaObj?.get("reasoning_content"))
+                if (reasoning.isNotEmpty()) reasoningBuf.append(reasoning)
                 // 携带 usage 的 chunk（通常为最后一个）：无论是否带 choices 都解析
                 obj?.get("usage")?.let { u ->
                     onUsage?.invoke(parseUsage(u))
@@ -139,6 +148,8 @@ class OpenAiApi(
             }
             runCatching { reader.close() }
             keepAlive = true
+            // 兜底：全程只有思考、没有正文（网关截断等）→ 用思考内容落地，避免“模型未返回有效内容”
+            if (!sawContent && reasoningBuf.isNotEmpty()) onDelta(reasoningBuf.toString())
             return true
         } finally {
             if (!keepAlive) c.disconnect()
@@ -333,6 +344,24 @@ class OpenAiApi(
         putStr(36, "data")
         putInt(40, pcm.size)
         return header + pcm
+    }
+
+    /** 提取流式文本：兼容字符串或 JSON 数组（含 {type:"text",text:"..."} 分片）。 */
+    private fun extractContent(el: JsonElement?): String = when {
+        el == null || el.isJsonNull -> ""
+        el.isJsonPrimitive -> el.asString
+        el.isJsonArray -> buildString {
+            val arr = el.asJsonArray
+            for (i in 0 until arr.size()) {
+                val part = arr.get(i)
+                when {
+                    part.isJsonPrimitive -> append(part.asString)
+                    part.isJsonObject && part.asJsonObject.get("text")?.isJsonPrimitive == true ->
+                        append(part.asJsonObject.get("text").asString)
+                }
+            }
+        }
+        else -> ""
     }
 
     /** Codex 同款思考深度：low/medium/high/xhigh 映射为 reasoning_effort 参数；auto/关闭 不传，兼容不支持该参数的模型。 */
