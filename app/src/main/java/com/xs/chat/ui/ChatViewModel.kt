@@ -1719,6 +1719,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                         reasoningEffort = _ui.value.reasoningEffort,
                         attachmentParts = parts,
                         // 高思考档下模型可能长时间只推 reasoning 不出正文：实时展示，避免“死机”错觉
+                        firstByteTimeoutMs = 20_000,
                         noContentTimeoutMs = 90_000,
                         onReasoning = { rz ->
                             lastReasoning = rz
@@ -1746,8 +1747,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // 模型输出原生 function:web_search 工具语法时：执行真实搜索并追加一轮续答
                 if (!completed) {
-                    // 长时间无正文被中止（超过 90s 或连接被取消）：不再空等，交下方非流式兜底补答
+                    // 20s 无首字节 / 90s 无正文：不再空等，切备用通道补答，并明确提示用户
                     Log.w(TAG, "stream aborted empty, fallback to non-stream")
+                    updateSearchMetaOnly(assistantId, "⚠️ 服务器响应超时，正在尝试备用通道补答…")
                     break
                 }
                 if (completed) {

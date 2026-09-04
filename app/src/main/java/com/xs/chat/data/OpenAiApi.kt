@@ -73,6 +73,7 @@ class OpenAiApi(
         reasoningEffort: String? = null,
         attachmentParts: Map<String, List<ContentPart>> = emptyMap(),
         onDelta: (String) -> Unit,
+        firstByteTimeoutMs: Long = 20_000,
         noContentTimeoutMs: Long = 120_000,
         onReasoning: ((String) -> Unit)? = null,
         onUsage: ((Usage) -> Unit)? = null
@@ -121,17 +122,25 @@ class OpenAiApi(
 
             val reader = bodyReader(c)
             var sawContent = false
+            val firstSeen = AtomicBoolean(false)
             val contentSeen = AtomicBoolean(false)
             var toolQuery: String? = null
             val reasoningBuf = StringBuilder()
-            // 正文硬截止看门狗：网关可能建流后静默（一行数据都不发，readLine 阻塞，循环里的
-            // “超时检查”永远轮不到），也可能只推 reasoning 不结束；独立线程到点直接断开连接
-            val deadline = System.currentTimeMillis() + noContentTimeoutMs
+            // 两段式看门狗：①首字节截止（网关建流后静默、readLine 阻塞，循环里的超时
+            // 检查永远轮不到）②正文截止（有字节但只推 reasoning 不出正文）；到点强制断开
+            val firstDeadline = System.currentTimeMillis() + firstByteTimeoutMs
+            val contentDeadline = System.currentTimeMillis() + noContentTimeoutMs
             val watchdog = Thread({
                 try {
-                    while (!contentSeen.get() && System.currentTimeMillis() < deadline) Thread.sleep(200)
+                    while (!firstSeen.get() && System.currentTimeMillis() < firstDeadline) Thread.sleep(250)
+                    if (!firstSeen.get()) {
+                        if (!cancelled) Log.w(DIAG_TAG, "watchdog: no first byte within ${firstByteTimeoutMs}ms, force disconnect")
+                        runCatching { c.disconnect() }
+                        return@Thread
+                    }
+                    while (!contentSeen.get() && System.currentTimeMillis() < contentDeadline) Thread.sleep(250)
                     if (!contentSeen.get() && !cancelled) {
-                        Log.w(DIAG_TAG, "watchdog: no content in ${noContentTimeoutMs}ms reasoning=${reasoningBuf.length}, force disconnect")
+                        Log.w(DIAG_TAG, "watchdog: no content within ${noContentTimeoutMs}ms reasoning=${reasoningBuf.length}, force disconnect")
                         runCatching { c.disconnect() }
                     }
                 } catch (e: InterruptedException) {
@@ -142,6 +151,7 @@ class OpenAiApi(
                 while (true) {
                     if (cancelled) return false
                     val line = reader.readLine() ?: break
+                    firstSeen.set(true)
                 if (!line.startsWith("data:")) continue
                 val payload = line.removePrefix("data:").trim()
                 if (payload == "[DONE]") break
@@ -192,7 +202,7 @@ class OpenAiApi(
                 return true
             } catch (e: Exception) {
                 // 看门狗强制断开（或网关静默挂死）导致读取中断：返回 false 交上层非流式兜底
-                if (!contentSeen.get() && (cancelled || System.currentTimeMillis() >= deadline)) {
+                if (!contentSeen.get() && (cancelled || System.currentTimeMillis() >= firstDeadline)) {
                     Log.w(DIAG_TAG, "stream interrupted by watchdog, fallback to non-stream")
                     return false
                 }

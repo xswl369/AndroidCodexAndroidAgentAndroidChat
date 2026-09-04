@@ -187,17 +187,18 @@ object Markdown {
      */
     private fun normalizeDenseList(text: String): String {
         val listStartRe = Regex(
-            "(^|[。！？；:：])(?:\\s*\\*{0,2})(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、])(?=\\S)",
+            // 边界含 "]": 条内引用 [N] 后直接接下一编号; lookahead 允许 "编号. " 后跟空格+粗体
+            "(^|[。！？；:：\\]])(?:\\s*\\*{0,2})(\\d{1,2}[.．、]|[一二三四五六七八九十]{1,3}[.、])(?=\\s*\\*{0,2}\\S)",
             RegexOption.MULTILINE
         )
         val out = listStartRe.replace(text) { m ->
-            if (m.groupValues[1].isEmpty()) m.value else m.groupValues[1] + "\n" + m.groupValues[3]
+            if (m.groupValues[1].isEmpty()) m.value else m.groupValues[1] + "\n" + m.groupValues[2]
         }
-        // 条目行内悬挂的闭合 **（如「1.标题**正文」）清理掉，避免残留星号
-        return Regex("^((?:\\d{1,2}|[一二三四五六七八九十]{1,3})[.．、])(\\S*?)\\*{2}", RegexOption.MULTILINE)
-            .replace(out) { m -> m.groupValues[1] + m.groupValues[2] }
+        // 只有整行 "**" 为奇数个（挂起的未闭合粗体）时才清除紧贴编号后的第一个，避免误伤正常粗体对
+        return out.lineSequence().joinToString("\n") { line ->
+            if (Regex("\\*\\*").findAll(line).count() % 2 == 1) line.replaceFirst(Regex("\\*\\*"), "") else line
+        }
     }
-
     private fun isTableSeparator(line: String): Boolean {
         val t = line.trim().trim('|').trim()
         return t.isNotEmpty() && t.all { it == '-' || it == ':' || it == ' ' } && t.contains('-')
@@ -504,6 +505,5 @@ private fun TableView(block: Block.Table, primary: Color) {
         }
     }
 }
-
 
 
