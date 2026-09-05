@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xs.chat.plugins.MdFormatPlugin
 import com.xs.chat.plugins.ScriptRunner
 
 // ---------- 语法树 ----------
@@ -327,7 +328,7 @@ fun MarkdownText(
 ) {
     // 解析失败时降级为纯文本，避免异常内容导致崩溃
     val blocks = remember(markdown) {
-        runCatching { Markdown.parse(markdown) }
+        runCatching { Markdown.parse(MdFormatPlugin.normalize(markdown)) }
             .getOrElse { listOf(Block.Paragraph(parsePlainSpans(markdown))) }
     }
     val codeBg = MaterialTheme.colorScheme.surfaceVariant

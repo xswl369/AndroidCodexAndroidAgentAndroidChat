@@ -35,7 +35,8 @@ object PluginRegistry {
         PluginInfo("file_edit", "文件修改", "AI 按指令修改文件，保留原格式，结果可预览并保存到下载目录"),
         PluginInfo("image_gen", "AI 生图", "文字 / 图片生成图片（需配置支持生图的模型）"),
         PluginInfo("video_gen", "AI 生视频", "文字 / 图片生成视频（需配置支持生视频的模型）"),
-        PluginInfo("memory", "记忆插件", "跨会话记录操作与对话历史，可在设置中配置上限")
+        PluginInfo("memory", "记忆插件", "跨会话记录操作与对话历史，可在设置中配置上限"),
+        PluginInfo(MdFormatPlugin.ID, MdFormatPlugin.NAME, MdFormatPlugin.DESC)
     )
 
     /** 全部插件 = 内置 + 用户自建。 */
