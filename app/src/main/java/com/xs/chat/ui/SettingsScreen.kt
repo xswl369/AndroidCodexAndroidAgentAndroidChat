@@ -95,6 +95,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.xs.chat.data.ApiConfig
 import com.xs.chat.data.AiModel
 import com.xs.chat.data.CallRole
 import com.xs.chat.data.SettingsStore
@@ -131,6 +132,10 @@ fun SettingsScreen(
     var showRoleDialog by remember { mutableStateOf(false) }
     var memoryLimitInput by rememberSaveable(state.memoryLimit) { mutableStateOf(state.memoryLimit.toString()) }
     var memoryExpanded by rememberSaveable { mutableStateOf(false) }
+    /** 删除/清空二次确认（避免误触直接删掉 API、模型或记忆）。 */
+    var pendingDeleteApi by remember { mutableStateOf<ApiConfig?>(null) }
+    var pendingDeleteModel by remember { mutableStateOf<AiModel?>(null) }
+    var pendingClearMemory by remember { mutableStateOf(false) }
     val lang = LocalLanguage.current
     val context = LocalContext.current
 
@@ -503,7 +508,7 @@ fun SettingsScreen(
                             trailingIcon = {
                                 IconButton(onClick = {
                                     apisExpanded = false
-                                    vm.deleteApiProfile(profile.id)
+                                    pendingDeleteApi = profile
                                 }) {
                                     Icon(Icons.Rounded.DeleteOutline, contentDescription = Lang.t(lang, "delete"))
                                 }
@@ -632,7 +637,7 @@ fun SettingsScreen(
                         isActive = model.id == state.activeModel?.id,
                         onSelect = { vm.selectModel(model) },
                         onEdit = { editingModel = model },
-                        onDelete = { vm.deleteModel(model.id) },
+                        onDelete = { pendingDeleteModel = model },
                         onSetDefault = { vm.setDefaultModel(model.id) }
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -678,11 +683,9 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
-                val clearMsg = Lang.t(lang, "memory_clear_done")
                 OutlinedButton(
                     onClick = {
-                        vm.clearMemory()
-                        Toast.makeText(context, clearMsg, Toast.LENGTH_SHORT).show()
+                        pendingClearMemory = true
                     },
                     enabled = state.memoryLog.isNotEmpty()
                 ) {
@@ -782,6 +785,57 @@ fun SettingsScreen(
         CallRoleDialog(
             onDismiss = { showRoleDialog = false },
             onConfirm = { role -> vm.addCallRole(role) }
+        )
+    }
+
+    // ---------- 删除/清空二次确认 ----------
+    pendingDeleteApi?.let { profile ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteApi = null },
+            title = { Text("删除 API 配置") },
+            text = { Text("确定要删除「${profile.name}」吗？删除后需重新保存该配置。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteApiProfile(profile.id)
+                    pendingDeleteApi = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteApi = null }) { Text("取消") }
+            }
+        )
+    }
+    pendingDeleteModel?.let { model ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteModel = null },
+            title = { Text("删除模型") },
+            text = { Text("确定要删除「${model.name}」吗？删除后需要重新添加才能使用。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.deleteModel(model.id)
+                    pendingDeleteModel = null
+                }) { Text("删除") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteModel = null }) { Text("取消") }
+            }
+        )
+    }
+    if (pendingClearMemory) {
+        AlertDialog(
+            onDismissRequest = { pendingClearMemory = false },
+            title = { Text("清空操作记忆") },
+            text = { Text("确定要清空全部操作记忆吗？清空后无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingClearMemory = false
+                    vm.clearMemory()
+                    Toast.makeText(context, Lang.t(lang, "memory_clear_done"), Toast.LENGTH_SHORT).show()
+                }) { Text("清空") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingClearMemory = false }) { Text("取消") }
+            }
         )
     }
 }

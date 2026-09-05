@@ -7,6 +7,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * 内置记忆插件：像 Codex 会话日志一样记录用户每次操作，
@@ -16,6 +17,16 @@ object MemoryPlugin {
     private const val FILE_NAME = "memory_log.txt"
     private const val DEFAULT_MAX_LINES = 2000
     private val io = Executors.newSingleThreadExecutor()
+    /** 内存操作日志变更监听：聊天气泡/设置页实时刷新，无需重启 App。 */
+    private val listeners = CopyOnWriteArraySet<(List<String>) -> Unit>()
+
+    fun addListener(listener: (List<String>) -> Unit) { listeners.add(listener) }
+
+    fun removeListener(listener: (List<String>) -> Unit) { listeners.remove(listener) }
+
+    private fun notify(newestFirst: List<String>) {
+        listeners.forEach { runCatching { it(newestFirst) } }
+    }
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
 
@@ -29,7 +40,10 @@ object MemoryPlugin {
             runCatching {
                 val f = file(context)
                 val lines = if (f.exists()) f.readLines() else emptyList()
-                (lines + line).takeLast(maxLines).also { f.writeText(it.joinToString("\n") + "\n") }
+                (lines + line).takeLast(maxLines).also { kept ->
+                    f.writeText(kept.joinToString("\n") + "\n")
+                    notify(kept.reversed())
+                }
             }
         }
     }
@@ -42,6 +56,9 @@ object MemoryPlugin {
 
     /** 清空操作记录。 */
     fun clear(context: Context) {
-        io.execute { runCatching { file(context).delete() } }
+        io.execute {
+            runCatching { file(context).delete() }
+            notify(emptyList())
+        }
     }
 }

@@ -1204,7 +1204,7 @@ private fun JumpToBottomButton(onClick: () -> Unit, onLongClick: () -> Unit, mod
     }
 }
 
-/** 输入栏「联网搜索」状态胶囊（元宝同款）：点开切换 自动 / 总是开启 / 关闭。 */
+/** 输入栏「联网搜索」状态胶囊（元宝同款）：点开切换 总是开启 / 关闭。 */
 @Composable
 private fun WebSearchModePill(mode: Int, onChange: (Int) -> Unit) {
     var open by remember { mutableStateOf(false) }
@@ -1212,7 +1212,6 @@ private fun WebSearchModePill(mode: Int, onChange: (Int) -> Unit) {
     val color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
     val label = when (mode) {
         2 -> "总是开启"
-        1 -> "自动"
         else -> "未开启"
     }
     Box {
@@ -1247,7 +1246,6 @@ private fun WebSearchModePill(mode: Int, onChange: (Int) -> Unit) {
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             listOf(
-                WebSearchModeOption("自动（智能判断是否需要联网）", WebSearchPlugin.MODE_AUTO),
                 WebSearchModeOption("总是开启（每次提问都搜索）", WebSearchPlugin.MODE_ALWAYS),
                 WebSearchModeOption("关闭（不联网搜索）", WebSearchPlugin.MODE_OFF)
             ).forEach { option ->
@@ -1266,24 +1264,23 @@ private fun WebSearchModePill(mode: Int, onChange: (Int) -> Unit) {
 /** 菜单选项：模式 + 文案。 */
 private data class WebSearchModeOption(val label: String, val mode: Int)
 
-/** 输入栏「思考深度」胶囊（Codex 同款）：自动 / 低 / 中 / 高 / 极高，低中高映射为 reasoning_effort。 */
+/** 输入栏「思考深度」胶囊（Codex 同款）：低 / 中 / 高 / 极高。 */
 @Composable
 private fun ReasoningEffortPill(effort: String, onChange: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
-    val auto = effort == "auto" || effort.isBlank()
     val label = when (effort) {
         "low" -> "低"
         "medium" -> "中"
         "high" -> "高"
         "xhigh" -> "极高"
-        else -> "自动"
+        else -> "高"
     }
-    val color = if (auto) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary
+    val color = MaterialTheme.colorScheme.primary
     Box {
         Surface(
             onClick = { open = true },
             shape = RoundedCornerShape(50),
-            color = if (auto) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer
+            color = MaterialTheme.colorScheme.primaryContainer
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1303,7 +1300,6 @@ private fun ReasoningEffortPill(effort: String, onChange: (String) -> Unit) {
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             listOf(
-                "auto" to "自动（由模型默认，不额外传参）",
                 "low" to "低（响应最快，思考最少）",
                 "medium" to "中（均衡）",
                 "high" to "高（深入思考）",

@@ -2,6 +2,7 @@ package com.xs.chat.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.xs.chat.plugins.WebSearchPlugin
 
 class SettingsStore(context: Context) {
     private val sp: SharedPreferences =
@@ -67,14 +68,14 @@ class SettingsStore(context: Context) {
         sp.edit().putBoolean(KEY_PLUGIN_PREFIX + pluginId, enabled).apply()
     }
 
-    /** 联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启，默认为自动。 */
+    /** 联网搜索模式（元宝同款）：0 关闭 / 2 总是开启（“自动”已移除，默认总是开启）。 */
     var webSearchMode: Int
-        get() = sp.getInt(KEY_WEB_SEARCH_MODE, 1).coerceIn(0, 2)
+        get() = sp.getInt(KEY_WEB_SEARCH_MODE, WebSearchPlugin.MODE_ALWAYS).coerceIn(0, 2)
         set(value) = sp.edit().putInt(KEY_WEB_SEARCH_MODE, value.coerceIn(0, 2)).apply()
 
-    /** 思考深度（Codex 同款）：auto / low / medium / high / xhigh，默认 auto（不传参，由服务端决定）。 */
+    /** 思考深度：low / medium / high / xhigh（“自动”已移除，默认 high）。 */
     var reasoningEffort: String
-        get() = sp.getString(KEY_REASONING_EFFORT, "auto").orEmpty()
+        get() = sp.getString(KEY_REASONING_EFFORT, "high").orEmpty()
         set(value) = sp.edit().putString(KEY_REASONING_EFFORT, value).apply()
 
     /** 用户自建插件列表（JSON 数组 [{id,name,desc}]，插件管理页添加/删除）。 */

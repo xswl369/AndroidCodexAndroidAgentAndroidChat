@@ -91,13 +91,16 @@ data class ChatUiState(
     val devicePairNeeded: Boolean = false,
     val plugins: List<PluginInfo> = PluginRegistry.plugins,
     val enabledPlugins: Set<String> = PluginRegistry.plugins.map { it.id }.toSet(),
-    /** 联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启，默认自动。 */
-    val webSearchMode: Int = 1,
-    /** 思考深度（Codex 同款）：auto / low / medium / high / xhigh。 */
-    val reasoningEffort: String = "auto",
+    /** 联网搜索模式（元宝同款）：0 关闭 / 2 总是开启。 */
+    val webSearchMode: Int = WebSearchPlugin.MODE_ALWAYS,
+    /** 思考深度：low / medium / high / xhigh。 */
+    val reasoningEffort: String = "high",
     /** 正在被 AI 完善定义的插件 id（添加插件后异步生成触发指令/使用说明）。 */
     val generatingPluginId: String? = null
 )
+
+/** 可选思考深度档位（"自动"已移除，仅保留用户可见档位）。 */
+private val VALID_REASONING_EFFORTS = setOf("low", "medium", "high", "xhigh")
 
 class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -117,8 +120,13 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private var pluginJob: Job? = null
     /** 设备意图云端二次确认任务（候选阶段防并发重入）。 */
     private var intentCheckJob: Job? = null
+    /** 记忆日志实时更新：MemoryPlugin 落盘后即时刷新界面（设置页无需重启即可看到最新记录）。 */
+    private val memoryListener: (List<String>) -> Unit = { lines ->
+        _ui.update { it.copy(memoryLog = lines) }
+    }
 
     init {
+        MemoryPlugin.addListener(memoryListener)
         refreshModels()
         refreshSettings()
         refreshHistory()
@@ -152,21 +160,25 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 memoryLimit = settings.memoryLimit,
                 rootControlEnabled = settings.rootControlEnabled,
                 plugins = PluginRegistry.all(settings),
-                webSearchMode = settings.webSearchMode,
-                reasoningEffort = settings.reasoningEffort,
+                // 旧配置迁移：联网模式去掉"自动"(映射为总是开启)、思考深度去掉"自动"(映射为高)
+                webSearchMode = if (settings.webSearchMode == WebSearchPlugin.MODE_AUTO) WebSearchPlugin.MODE_ALWAYS else settings.webSearchMode,
+                reasoningEffort = if (settings.reasoningEffort in VALID_REASONING_EFFORTS) settings.reasoningEffort else "high",
                 enabledPlugins = PluginRegistry.all(settings).map { it.id }.filter { settings.pluginEnabled(it) }.toSet()
             )
         }
+        // 迁移结果写回存储，避免每次启动重复判断
+        if (settings.webSearchMode == WebSearchPlugin.MODE_AUTO) settings.webSearchMode = WebSearchPlugin.MODE_ALWAYS
+        if (settings.reasoningEffort !in VALID_REASONING_EFFORTS) settings.reasoningEffort = "high"
     }
 
-    /** 切换思考深度（Codex 同款）：auto / low / medium / high / xhigh。 */
+    /** 切换思考深度：low / medium / high / xhigh。 */
     fun setReasoningEffort(effort: String) {
         settings.reasoningEffort = effort
         _ui.update { it.copy(reasoningEffort = effort) }
         MemoryPlugin.log(getApplication(), "思考深度", effort)
     }
 
-    /** 切换联网搜索模式（元宝同款）：0 关闭 / 1 自动 / 2 总是开启。 */
+    /** 切换联网搜索模式（元宝同款）：0 关闭 / 2 总是开启。 */
     fun setWebSearchMode(mode: Int) {
         settings.webSearchMode = mode
         _ui.update { it.copy(webSearchMode = mode) }
@@ -1227,8 +1239,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             if (q.isNotEmpty()) return if (mode == WebSearchPlugin.MODE_OFF) null else q to true
         }
         if (explicitOnly) return null
-        // ② 总是开启：每次提问都自动联网搜索（元宝同款）
-        if (mode == WebSearchPlugin.MODE_ALWAYS) return text to false
+        // ② 总是开启：每次提问都自动联网搜索（元宝同款）；长段消息先提纯检索词
+        if (mode == WebSearchPlugin.MODE_ALWAYS) return compactQuery(text) to false
         // ③ 自动：闲聊 / 关于 AI 自身的问题不联网
         if (text.length !in 4..200) return null
         val lower = text.lowercase(Locale.ROOT)
@@ -1243,6 +1255,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             return "$prevUser $text" to false
         }
         return text to false
+    }
+
+    /**
+     * 长段消息提纯搜索词：按句读切割后优先取含日期/时效/事实关键词的分句，
+     * 避免“发一大段文字却逐字盲搜”导致结果跑偏。
+     */
+    private fun compactQuery(text: String): String {
+        val clauses = text.split(Regex("[。！？!?；;，,\n]+")).map { it.trim() }.filter { it.isNotBlank() }
+        if (clauses.size <= 2) return text.trim().take(60)
+        val dateLike = Regex("""[0-9\u4E00-\u9FA5]{1,4}\s*[年月日号]""")
+        val core = clauses.firstOrNull { c -> dateLike.containsMatchIn(c) || WEB_QUERY_KEYWORDS.any { c.contains(it) } }
+        return (core ?: clauses.maxByOrNull { it.length } ?: text).trim().take(40).ifBlank { text.trim().take(60) }
     }
 
     /**
@@ -2039,6 +2063,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        MemoryPlugin.removeListener(memoryListener)
         stop()
         super.onCleared()
     }

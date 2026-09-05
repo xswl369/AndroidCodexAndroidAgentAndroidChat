@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.text.selection.SelectionState
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -39,6 +42,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -107,6 +112,30 @@ internal fun SelectableMessage(
     SelectionContainer(state = state, modifier = modifier, content = content)
 }
 
+/**
+ * 长文本「选择复制」弹窗：Compose SelectionContainer 无滚动文本中的长文
+ * （选中区间超出可见区/全选无反应）选不中中段，这里改用可滚动的只读
+ * BasicTextField 承载，长按拖选与「全选/复制」菜单均稳定可用。
+ */
+@Composable
+private fun LongTextCopyDialog(text: String, onDismiss: () -> Unit) {
+    val value = remember(text) { TextFieldValue(text) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择要复制的文字") },
+        text = {
+            BasicTextField(
+                value = value,
+                onValueChange = {},
+                readOnly = true,
+                textStyle = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)
+            )
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("完成") } }
+    )
+}
+
 /** 消息菜单：菜单项固定，展开状态由父级控制（竖三点按钮与长按共用）。 */
 @Composable
 private fun MessageMenu(
@@ -162,6 +191,17 @@ fun UserMessageBubble(
                     // 长按选中文字并弹出复制菜单（位置跟随长按处）
                     SelectableMessage {
                         Text(WebSearchPlugin.stripToolMarkup(content), style = MaterialTheme.typography.bodyMedium)
+                    }
+                    val plain = WebSearchPlugin.stripToolMarkup(content)
+                    if (plain.length > 800) {
+                        var openLongCopy by remember { mutableStateOf(false) }
+                        TextButton(
+                            onClick = { openLongCopy = true },
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("📋 长文选择复制", style = MaterialTheme.typography.labelSmall)
+                        }
+                        if (openLongCopy) LongTextCopyDialog(plain) { openLongCopy = false }
                     }
                 }
             }
@@ -304,6 +344,14 @@ fun AssistantMessageView(
                         onRunCode = onRunCode,
                         onCopyCode = onCopyCode
                     )
+                }
+                val plainContent = WebSearchPlugin.stripToolMarkup(message.content)
+                if (plainContent.length > 800) {
+                    var openLongCopy by remember { mutableStateOf(false) }
+                    TextButton(onClick = { openLongCopy = true }) {
+                        Text("📋 长文选择复制", style = MaterialTheme.typography.labelSmall)
+                    }
+                    if (openLongCopy) LongTextCopyDialog(plainContent) { openLongCopy = false }
                 }
                 if (isStreaming) {
                     val progress = message.progress
