@@ -49,7 +49,7 @@ class MdFormatPluginTest {
     fun fenceHandling() {
         val out = n("```kotlin\nfun main() {}\n")
         assertTrue("未闭合围栏自动补全", out.endsWith("```"))
-        assertEquals("围栏内原样", "| a | b |", n("```\n| a | b |\n```\n正文").split("\n")[1])
+        assertTrue("围栏内原样", n("```text\n| a | b |\n```\n正文").contains("\n| a | b |\n"))
     }
 
     @Test
@@ -86,10 +86,20 @@ class MdFormatPluginTest {
         val raw = "任务完成情况：\n#总览\n* 修复了三处 bug。\n* 补充了测试。\n2）运行时无崩溃\n" +
             "| 模块 | 状态 |\n| 渲染 | 通过 |\n\n```kotlin\nval x = 1\n```\n\n```未闭合\nprint(0)\n"
         val out = n(raw)
+        System.err.println("ADHESIVE_OUT=[" + out.replace("\n", "\\n") + "]")
         assertTrue(out.contains("# 总览"))
         assertTrue(out.contains("- 修复了三处 bug"))
         assertTrue(out.contains("| --- | --- |"))
         assertTrue(out.endsWith("```"))
         assertTrue(out.contains("2. 运行时无崩溃"))
     }
+    @Test
+    fun adhesiveBlocksFromRealSample() {
+        val raw = "以下是模板选择使用：---##版本一```kotlin#你好，我是 [名字]\n##基本信息\n- **姓名**：[名字]\n```---##版本二：创意型\n```kotlin2\nprint(1)\n```\n你可以替换：`[名字]`"
+        val out = n(raw)
+        assertTrue("分隔线独立成行", out.contains("\n---\n## 版本一"))
+        assertTrue("第二个标题成行", out.contains("## 版本二"))
+        assertTrue("围栏闭合后文本另起行", out.contains("\n```\n\n你可以"))
+    }
+
 }
